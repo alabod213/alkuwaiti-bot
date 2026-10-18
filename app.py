@@ -34,18 +34,72 @@ exchange = ccxt.binance({
     }
 })
 
-# خوارزمية التداول الآلي وسحب 50% من الأرباح إلى رين
+# عنوان محفظة رين الخاصة بك لاستلاف أرباح البتكوين
+RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
+
+# 2. خوارزمية استراتيجية القنص الذكي (Scalping Engine)
 def auto_trading_engine():
+    symbol = 'BTC/USDT'  # العملة الأساسية للمراقبة
+    leverage = 5  # رافعة مالية آمنة لتخطي حد الـ 10 دولارات لبايننس
+    
+    try:
+        exchange.set_leverage(leverage, symbol)
+    except Exception as e:
+        print(f"Error setting leverage: {e}")
+
     while True:
         try:
-            # هنا تعمل خوارزمية السكالبينج بـ 10% من رأس المال وقراءة الأسعار العالمية
-            time.sleep(60)  # مسح وفحص السوق كل دقيقة
+            # قراءة الرصيد المتاح في محفظة العقود الآجلة
+            balance = exchange.fetch_balance()
+            free_balance = balance['free']['USDT']
+            
+            if free_balance < 10:
+                print("الرصيد في محفظة الفيوتشر أقل من الحد الأدنى")
+                time.sleep(60)
+                continue
+
+            # حساب قيمة الصفقة (10% من رأس المال المتاح)
+            order_size_usdt = free_balance * 0.10
+            ticker = exchange.fetch_ticker(symbol)
+            current_price = ticker['last']
+            
+            # فحص المراكز المفتوحة لتجنب التكرار
+            positions = exchange.fetch_positions(symbols=[symbol])
+            has_position = False
+            for pos in positions:
+                if float(pos['contracts']) > 0:
+                    has_position = True
+                    pnl = float(pos['unrealizedProfit'])
+                    if pnl > (order_size_usdt * 0.05):  # هدف الربح 5%
+                        exchange.create_market_order(symbol, 'sell', pos['contracts'], {'reduceOnly': True})
+                        process_profits_to_rain(pnl * 0.50)
+
+            if not has_position:
+                amount_to_buy = order_size_usdt / current_price
+                exchange.create_market_order(symbol, 'buy', amount_to_buy)
+
+            time.sleep(60)
+            
         except Exception as e:
             time.sleep(10)
 
-# تشغيل محرك التداول في الخلفية بشكل مستقل ودائم
-threading.Thread(target=auto_trading_engine, daemon=True).start()
+# 3. محرك تحويل الأرباح الآلي إلى رين (Rain)
+def process_profits_to_rain(profit_usdt):
+    try:
+        if profit_usdt <= 0:
+            return
+        exchange.transfer('USDT', profit_usdt, 'future', 'spot')
+        time.sleep(2)
+        btc_ticker = exchange.fetch_ticker('BTC/USDT')
+        btc_amount = profit_usdt / btc_ticker['last']
+        exchange.create_market_order('BTC/USDT', 'buy', btc_amount, {'tdMode': 'cash'})
+        time.sleep(2)
+        exchange.withdraw('BTC', btc_amount, RAIN_BITCOIN_ADDRESS)
+    except Exception as e:
+        print(f"Error transferring: {e}")
 
+# 4. تشغيل محرك التداول في الخلفية بشكل مستقل ودائم
+threading.Thread(target=auto_trading_engine, daemon=True).start()
 
 default_settings = {
     "app_name": "بوت الكويتي",
