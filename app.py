@@ -26,8 +26,8 @@ import time
 
 # ربط الحساب الحقيقي لبايننس بالمفاتيح المؤمنة
 exchange = ccxt.binance({
-    'apiKey': 'T4FNsEIY0oVllt0hB4FmMgUog158I5foRhNNvbi1JlSPReCTBxyzm3JJRjf86lKy',
-    'secret': 'JhYZTZ17LijMTRFxKEipQHXGbgbgnEWNKzXM0OwNtZb6Iguga5GNWvGLWGegpmzh',
+    'apiKey': 'V0l1KbmIggXAoNjOtCapBT2FX0aGUx4EdsgySrRNOjROVAraZ0SZpFXEPjvRT0Cy',
+    'secret': 'Spp4vhqManMIj9DcmQh1ATaXQXBCuPOs9pwRAs63TjxVQV83KTK7qu9hOJAqDndS',
     'enableRateLimit': True,
     'options': {
         'defaultType': 'future'  # تفعيل نظام العقود الآجلة تلقائياً
