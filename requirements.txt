@@ -1,4 +1,5 @@
-Flask==3.0.3
+Flask==3.0.2
+ccxt==4.2.42
 pytz==2024.1
-gunicorn==22.0.0
-ccxt
+Werkzeug==3.0.1
+
