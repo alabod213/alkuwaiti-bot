@@ -2,4 +2,6 @@ Flask==3.0.2
 ccxt==4.2.42
 pytz==2024.1
 Werkzeug==3.0.1
+cryptography==42.0.5
+
 
