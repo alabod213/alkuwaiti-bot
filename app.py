@@ -1,5 +1,5 @@
 import os, time, threading, pytz, secrets
-from flask import Flask, request, redirect, url_for, session
+from flask import Flask, request, redirect, url_for, session, jsonify
 import ccxt
 
 app = Flask(__name__)
@@ -18,6 +18,79 @@ exchange = ccxt.binance({
 users_db = {}
 total_subscription_earnings = 0.0
 
+# محرك ذكي يجلب جميع العملات المتوفرة في بايننس حياً مع محرك بحث فوري بالـ JavaScript لسرعة الهاتف والكمبيوتر
+def get_all_binance_markets_widget():
+    html = '''
+    <div style="background:#1e1e1e; padding:20px; border-radius:12px; margin-top:20px; border:1px solid #ffcc00; text-align:right;">
+        <h3 style="color:#ffcc00; margin:0 0 10px 0; text-align:center;">🌐 رادار جميع عملات منصة بايننس العالمية حياً</h3>
+        <p style="color:#aaa; font-size:13px; text-align:center; margin-bottom:15px;">ابحث عن أي عملة رقمية في بايننس لمشاهدة سعرها الفوري وحركتها الآن:</p>
+        
+        <input type="text" id="cryptoSearch" onkeyup="searchCrypto()" placeholder="🔍 اكتب اسم العملة هنا للبحث الفوري... (مثال: BTC , SOL)" 
+            style="width:100%; padding:12px; border-radius:8px; border:1px solid #444; background:#111; color:white; font-size:14px; margin-bottom:15px; box-sizing: border-box;">
+        
+        <div style="max-height: 350px; overflow-y: auto; border: 1px solid #222; border-radius: 8px;">
+            <table id="cryptoTable" width="100%" style="border-collapse:collapse; text-align:center; font-size:14px;">
+                <thead style="background:#222; color:#ffcc00; position: sticky; top: 0;">
+                    <tr>
+                        <th style="padding:10px;">الزوج</th>
+                        <th>السعر الحالي</th>
+                        <th>تغير 24 ساعة</th>
+                    </tr>
+                </thead>
+                <tbody>
+    '''
+    try:
+        tickers = exchange.fetch_tickers()
+        # تصفية أزواج USDT فقط لسهولة القراءة وجلبها بالكامل مرتبة
+        usdt_pairs = sorted([k for k in tickers.keys() if k.endswith('/USDT')])
+        
+        for symbol in usdt_pairs:
+            ticker = tickers[symbol]
+            price = round(ticker['last'], 2) if ticker['last'] >= 1 else round(ticker['last'], 4)
+            change = round(ticker['percentage'], 2) if ticker['percentage'] is not None else 0.0
+            color = '#00ff00' if change >= 0 else '#ff3333'
+            sign = '+' if change >= 0 else ''
+            
+            html += f'''
+            <tr style="background:#141414; border-bottom:1px solid #222;">
+                <td style="padding:10px; font-weight:bold; color:white;">{symbol.replace('/USDT','')} <span style="color:#666; font-size:11px;">/USDT</span></td>
+                <td style="color:#00ff00; font-family:monospace;">${price}</td>
+                <td style="color:{color}; font-weight:bold; font-family:monospace;">{sign}{change}%</td>
+            </tr>
+            '''
+    except Exception as e:
+        html += f'<tr><td colspan="3" style="padding:20px; color:#aaa;">جاري الاتصال السحابي بالمنصة وتحديث أجهزة الرادار...</td></tr>'
+        
+    html += '''
+                </tbody>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+    function searchCrypto() {
+        var input, filter, table, tr, td, i, txtValue;
+        input = document.getElementById("cryptoSearch");
+        filter = input.value.toUpperCase();
+        table = document.getElementById("cryptoTable");
+        tr = table.getElementsByTagName("tr");
+        
+        for (i = 1; i < tr.length; i++) {
+            td = tr[i].getElementsByTagName("td")[0];
+            if (td) {
+                txtValue = td.textContent || td.innerText;
+                if (txtValue.toUpperCase().indexOf(filter) > -1) {
+                    tr[i].style.display = "";
+                } else {
+                    tr[i].style.display = "none";
+                }
+            }       
+        }
+    }
+    </script>
+    '''
+    return html
+
 @app.route('/')
 def index():
     return redirect(url_for('login'))
@@ -35,74 +108,35 @@ def login():
             session['logged_in'] = True
             session['role'] = 'user'
             session['user_email'] = email
-            return redirect(url_for('user_dashboard'))
-        return '<script>alert("البيانات خاطئة!"); window.history.back();</script>'
+            return redirect(url_for('payment_page'))
+        return '<script>alert("بيانات الدخول غير صحيحة!"); window.history.back();</script>'
     
-    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">دخول آمن 🔐</button></form><p style="text-align:center;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a></p></div></body></html>'
+    crypto_widget = get_all_binance_markets_widget() # جلب كافة عملات بايننس قبل الدخول
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:40px; padding-left:15px; padding-right:15px;"><div style="background:#141414; max-width:480px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p></div><div style="max-width:480px; margin:0 auto;">{crypto_widget}</div></body></html>'
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if request.method == 'POST':
+        email = request.form.get('email').strip().lower()
+        if email == ADMIN_EMAIL:
+            return f'<script>alert("أهلاً بالمشرف عبد الله، كود أمانك الثابت هو: {SECURITY_CODE}"); window.location.href="/login";</script>'
+        if email in users_db:
+            user_pass = users_db[email]['password']
+            return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:380px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #00bfff; text-align:right;"><h3>🔑 استعادة الحساب الموثق</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px 20px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">العودة لتسجيل الدخول 🔓</a></div></body></html>'
+        return '<script>alert("هذا البريد الإلكتروني غير مسجل لدينا!"); window.history.back();</script>'
+    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">التحقق واستعادة الحساب 🛡️</button></form></div></body></html>'
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
-    global total_subscription_earnings
     if request.method == 'POST':
         username = request.form.get('username')
         email = request.form.get('email').strip().lower()
         password = request.form.get('password')
         plan = request.form.get('plan')
         amount = float(request.form.get('amount', 0))
+        if email in users_db or email == ADMIN_EMAIL: return '<script>alert("مسجل مسبقاً!"); window.history.back();</script>'
+        users_db[email] = {'username': username, 'password': password, 'plan': plan, 'amount': amount, 'status': 'بانتظار دفع الاشتراك ⏳'}
+        session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
+        return redirect(url_for('payment_page'))
         
-        if email in users_db or email == ADMIN_EMAIL:
-            return '<script>alert("مسجل مسبقاً!"); window.history.back();</script>'
-            
-        users_db[email] = {'username': username, 'password': password, 'plan': plan, 'amount': amount, 'status': 'نشط ومتابع'}
-        total_subscription_earnings += 49.99
-        session['logged_in'] = True
-        session['role'] = 'user'
-        session['user_email'] = email
-        return redirect(url_for('user_dashboard'))
-        
-    return '<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🤖 حساب مستثمر جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي</option><option value="monthly">شهري</option><option value="yearly">سنوي</option></select><br><input type="number" name="amount" placeholder="رأس المال ($)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب والربط 🚀</button></form></div></body></html>'
-
-@app.route('/admin-panel')
-def admin_panel():
-    if not session.get('logged_in') or session.get('role') != 'admin': return redirect(url_for('login'))
-    try:
-        balance = exchange.fetch_balance()
-        free_usdt = round(balance['free'].get('USDT', 0), 2)
-    except: free_usdt = "خطأ في الاتصال ببايننس"
-    
-    rows = ""
-    for k, v in users_db.items():
-        rows += f"<tr style='background:#222;'><td>{v['username']}</td><td>{k}</td><td>{v['plan']}</td><td>${v['amount']}</td><td>{v['status']}</td></tr>"
-    if not users_db: rows = "<tr><td colspan='5' style='color:#666; padding:15px;'>لا يوجد مستثمرون حالياً.</td></tr>"
-    
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:800px; margin:0 auto; background:#141414; padding:25px; border-radius:15px; border:1px solid #ffcc00;"><h2>🇰🇼 لوحة المشرف عبد الله</h2><p>رصيد بايننس الحالي: <b style="color:#00ff00;">${free_usdt} USDT</b></p><p>أرباح الاشتراكات المجمعة: <b>${total_subscription_earnings} USD</b></p><hr><table width="100%" border="1" cellpadding="8" style="text-align:center; border-collapse:collapse;"><thead><tr style="color:#ffcc00;"><th>الاسم</th><th>البريد</th><th>الباقة</th><th>رأس المال</th><th>الحالة</th></tr></thead><tbody>{rows}</tbody></table><br><a href="/logout" style="color:red;">خروج</a></div></body></html>'
-
-@app.route('/user-dashboard')
-def user_dashboard():
-    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
-    u = users_db.get(session.get('user_email'), {})
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:40px; text-align:center;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:12px; border:1px solid #ffcc00; text-align:right;"><h2>📊 لوحة المستثمر</h2><p>مرحباً: <b>{u.get("username")}</b></p><p>رأس مالك المتابع بأمان: <b style="color:#00ff00;">${u.get("amount")} USDT</b></p><p>الحالة: <b style="color:#00bfff;">{u.get("status")}</b></p><hr><a href="/logout" style="color:red;">خروج</a></div></body></html>'
-
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('login'))
-
-def auto_trading_engine():
-    while True:
-        try:
-            balance = exchange.fetch_balance()
-            free = balance['free'].get('USDT', 0)
-            if free > 20:
-                ticker = exchange.fetch_ticker('BTC/USDT')
-                amt = (free * 0.05) / ticker['last']
-                amt_fmt = exchange.amount_to_precision('BTC/USDT', amt)
-                if float(amt_fmt) > 0: exchange.create_market_order('BTC/USDT', 'buy', amt_fmt)
-        except: pass
-        time.sleep(20)
-
-threading.Thread(target=auto_trading_engine, daemon=True).start()
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    crypto_widget = get_all_binance_markets_widget() # جلب كافة عملات بايننس قبل التسجيل لزيادة الاحترافية التسويقية
