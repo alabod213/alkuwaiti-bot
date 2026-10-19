@@ -18,7 +18,7 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'kuwaiti_bot_secure_session_
 ADMIN_EMAIL = os.environ.get('BOT_ADMIN_EMAIL', "alabod213@gmail.com")
 SERVER_URL = os.environ.get('SERVER_URL', 'http://localhost:10000')
 
-# إعدادات خادم البريد الإلكتروني (SMTP) لضمان وصول الرسائل للمشتركين وعبد الله
+# إعدادات خادم البريد الإلكتروني (SMTP)
 SMTP_SERVER = os.environ.get('SMTP_SERVER', '://gmail.com')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
 SMTP_USER = os.environ.get('SMTP_USER', 'your_bot_email@gmail.com')
@@ -26,25 +26,26 @@ SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', 'your_email_app_password')
 
 # ربط بايننس الآمن
 exchange = ccxt.binance({
-    'apiKey': os.environ.get('BINANCE_API_KEY', 'ضع_API_الجديد_هنا'), 
-    'secret': os.environ.get('BINANCE_API_SECRET', 'ضع_SECRET_الجديد_هنا'), 
+    'apiKey': os.environ.get('BINANCE_API_KEY', 'ضع_API_الجديد_هنا'),
+    'secret': os.environ.get('BINANCE_API_SECRET', 'ضع_SECRET_الجديد_هنا'),
     'enableRateLimit': True,
     'options': {'defaultType': 'future'}
 })
 
+# التحديث الحاسم: استقبال جميع الاشتراكات والعمولات التراكمية عبر عنوان محفظة البيتكوين الحقيقي لعبد الله في رين
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
-RAIN_USDT_ADDRESS = os.environ.get('RAIN_USDT_ADDRESS', 'ضع_عنوان_محفظة_USDT_الخاص_بك_في_رين_هنا')
+
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'AVAX/USDT']
 
 # متغيرات النظام المالية والأمنية الحية
 accumulated_my_profit = 0.0
-total_subscription_earnings = 0.0  # إجمالي الدخل التراكمي المحقق من رسوم الاشتراكات
-weekly_trading_profits = 0.0       # إجمالي أرباح التداول المحققة خلال الأسبوع الحالي
-new_subscribers_count = 0          # عداد المشتركين المستجدين خلال الأسبوع
+total_subscription_earnings = 0.0 
+weekly_trading_profits = 0.0       
+new_subscribers_count = 0         
 
-users_db = {}          
+users_db = {}         
 verified_ips_db = {}   
-pending_otps = {}      
+pending_otps = {}     
 
 current_admin_token = ""
 token_expiry_date = datetime.now()
@@ -68,8 +69,7 @@ def get_user_ip():
     return request.remote_addr
 
 def is_ip_authorized():
-    if session.get('logged_in') and session.get('user_email') == ADMIN_EMAIL:
-        return True  
+    if session.get('logged_in') and session.get('user_email') == ADMIN_EMAIL: return True 
     user_ip = get_user_ip()
     if user_ip in verified_ips_db:
         if datetime.now() < verified_ips_db[user_ip]: return True
@@ -88,55 +88,24 @@ def send_custom_email(target_email, subject, body_text):
         server.sendmail(SMTP_USER, [target_email], msg.as_string())
         server.quit()
         return True
-    except:
-        return False
+    except: return False
 
-# 🕒 محرك حساب وإرسال التقرير المالي المالي الأسبوعي المجدول في تمام الساعة 3 فجراً بتوقيت الكويت
 def weekly_financial_report_scheduler():
     global new_subscribers_count, weekly_trading_profits
     while True:
         try:
-            # التحقق من التوقيت المحلي لدولة الكويت
             kuwait_tz = pytz.timezone('Asia/Kuwait')
             kuwait_now = datetime.now(kuwait_tz)
-            
-            # الشرط: يوم الاثنين (weekday == 0) في تمام الساعة 3 فجراً (hour == 3 و minute == 0)
             if kuwait_now.weekday() == 0 and kuwait_now.hour == 3 and kuwait_now.minute == 0:
-                
-                # حساب إجمالي حجم رؤوس أموال الاستثمارات الحالية للمشتركين الجدد
                 total_new_investment = sum(u['investment_amount'] for u in users_db.values() if u.get('is_new_this_week', True))
-                
-                # صياغة التقرير المالي المبسط المخصص للمشرف عبد الله
-                report_body = f"""
-                مرحباً عبد الله،
-                
-                إليك التقرير المالي والإحصائي الأسبوعي لبوت الكويت (مجدول تلقائياً الساعة 3:00 صباحاً):
-                
-                📊 إحصائيات المشتركين الجدد والاستثمارات:
-                • عدد المشتركين الجدد هذا الأسبوع: {new_subscribers_count} مستخدم
-                • إجمالي رؤوس أموال استثماراتهم المودعة في بايننس: ${total_new_investment:.2f} USDT
-                
-                💰 كشف الحساب والدخل الصافي:
-                • الدخل الصافي المحقق من رسوم الاشتراكات: ${total_subscription_earnings:.2f} USD (تم تحويلها لـ Rain)
-                • أرباحك الصافية المحققة من صفقات التداول (نسبة الـ 50%): ${weekly_trading_profits:.2f} USDT
-                
-                دمت بأمان،
-                نظام التقارير المالية الآلي - بوت الكويت.
-                """
-                
-                # إرسال التقرير فوراً لبريد عبد الله
+                report_body = f"""مرحباً عبد الله،\n\nإليك التقرير المالي الأسبوعي لبوت الكويت (مجدول الساعة 3:00 فجراً):\n\n📊 إحصائيات المشتركين الجدد:\n• عدد المشتركين الجدد: {new_subscribers_count} مستخدم\n• إجمالي استثماراتهم المودعة: ${total_new_investment:.2f} USDT\n\n💰 كشف الدخل الصافي لـ Rain:\n• الدخل المحقق من رسوم الاشتراكات: ${total_subscription_earnings:.2f} USD\n• أرباحك الصافية التداولات (نسبة الـ 50%): ${weekly_trading_profits:.2f} USDT (تم تحويل الإجمالي كـ BTC لـ Rain)\n\nنظام التقارير المالية الآلي."""
                 send_custom_email(ADMIN_EMAIL, "📊 التقرير المالي والإحصائي الأسبوعي - بوت الكويت", report_body)
-                
-                # تصفير العدادات الأسبوعية لبدء دورة حسابية جديدة للأسبوع القادم
                 new_subscribers_count = 0
                 weekly_trading_profits = 0.0
-                for u in users_db.values():
-                    u['is_new_this_week'] = False
-                    
-                time.sleep(60) # تلافي تكرار الإرسال في نفس الدقيقة
-        except Exception as e:
-            print(f"خطأ في مجدول التقارير الأسبوعية: {e}")
-        time.sleep(30) # الفحص الدوري للتوقيت كل 30 ثانية
+                for u in users_db.values(): u['is_new_this_week'] = False
+                time.sleep(60)
+        except Exception as e: print(f"خطأ في مجدول التقارير: {e}")
+        time.sleep(30)
 
 def notifications_scheduler():
     while True:
@@ -147,12 +116,10 @@ def notifications_scheduler():
                 duration_weeks = u_data.get('duration', 1)
                 expiry_dt = join_dt + timedelta(weeks=duration_weeks)
                 now_dt = datetime.now()
-                
                 if 'expiry' in notify_prefs and now_dt >= expiry_dt and u_data.get('status') == 'نشط ومتابع':
                     u_data['status'] = 'منتهي الصلاحية'
                     send_custom_email(u_email, "⚠️ تنبيه انتهاء العقد - بوت الكويت", f"عزيزي {u_data['username']}، انتهت مدة اشتراكك الاستثماري.")
-                
-                report_body = f"مرحباً {u_data['username']}، تقريرك الاستثماري المخصص من بوت الكويت.\nرأس المال: ${u_data['investment_amount']} USDT.\nالحالة: {u_data['status']}."
+                report_body = f"مرحباً {u_data['username']}، تقريرك الاستثماري الدوري من بوت الكويت.\nرأس المال: ${u_data['investment_amount']} USDT.\nالحالة: {u_data['status']}."
                 if 'daily' in notify_prefs: send_custom_email(u_email, "📊 تقريرك اليومي - بوت الكويت", report_body)
                 if 'weekly' in notify_prefs and now_dt.weekday() == 0: send_custom_email(u_email, "📈 تقريرك الأسبوعي - بوت الكويت", report_body)
         except: pass
@@ -181,8 +148,7 @@ def calculate_subscription_price(plan_type, duration):
     return round(price, 2)
 
 @app.route('/')
-def index():
-    return redirect(url_for('login'))
+def index(): return redirect(url_for('login'))
 
 @app.route('/secure-admin-entry/<token>')
 def secure_admin_entry(token):
@@ -211,5 +177,33 @@ def register():
             return '''<script>alert("خطأ في البيانات أو مسجل مسبقاً."); window.history.back();</script>'''
 
         final_price = calculate_subscription_price(plan, duration)
-        
-        # إضافة المدخول لعداد الاشتراكات التراكمي وزيادة عدد المشتركين الجدد للأسبوع
+        total_subscription_earnings += final_price
+        new_subscribers_count += 1
+
+        hashed_password = generate_password_hash(password)
+        users_db[email] = {
+            'username': username, 'password': hashed_password, 'plan': plan,
+            'duration': duration, 'payment_method': payment_method,
+            'investment_amount': investment_amount, 'status': 'نشط ومتابع',
+            'notification_preferences': notification_preferences,
+            'join_datetime': datetime.now(), 'is_new_this_week': True 
+        }
+        trigger_funds_routing(investment_amount)
+
+        otp = str(random.randint(100000, 999999))
+        pending_otps[email] = otp
+        send_custom_email(email, '🔒 رمز تحقق الأمن - بوت الكويت', f"رمز التحقق هو: {otp}")
+
+        session['logged_in'] = True
+        session['user_email'] = email
+        return redirect(url_for('verify_otp_page'))
+
+    w_price = calculate_subscription_price('weekly', 1)
+    m_price = calculate_subscription_price('monthly', 1)
+    y_price = calculate_subscription_price('yearly', 1)
+
+    return f'''
+    <html lang="ar" dir="rtl">
+    <head><meta charset="UTF-8"><title>إنشاء حساب</title></head>
+    <body style="background-color: #0d0d0d; color: white; font-family: sans-serif; padding: 20px;">
+        {GOOGLE_TRANSLATE_SCRIPT}
