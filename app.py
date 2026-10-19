@@ -38,6 +38,7 @@ def get_ultimate_binance_widget():
     <script>
     async function loadBinanceTickerData() {
         try {
+            // التصحيح التاريخي: الاتصال بالرابط البرمجي الرسمي لبايننس لجلب الأسعار الفورية كـ JSON بدلاً من الموقع العام
             const response = await fetch('https://binance.com');
             const data = await response.json();
             const tbody = document.getElementById('market-data-rows');
