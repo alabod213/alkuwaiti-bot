@@ -80,7 +80,6 @@ def calculate_dynamic_subscription_fee(plan, email):
     if plan == 'yearly':
         note = "💎 باقة التوفير السنوية الشاملة: تتضمن شهرين مجاناً بالكامل!"
     return round(final_price, 2), note
-
 import os, time, threading, secrets
 from datetime import datetime
 import pytz
@@ -163,7 +162,6 @@ def calculate_dynamic_subscription_fee(plan, email):
     if plan == 'yearly':
         note = "💎 باقة التوفير السنوية الشاملة: تتضمن شهرين مجاناً بالكامل!"
     return round(final_price, 2), note
-
 import os, time, threading, secrets
 from datetime import datetime
 import pytz
