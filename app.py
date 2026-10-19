@@ -14,38 +14,32 @@ import ccxt
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'kuwaiti_bot_secure_session_key')
 
-# إعدادات المشرف عبد الله الثابتة
 ADMIN_EMAIL = os.environ.get('BOT_ADMIN_EMAIL', "alabod213@gmail.com")
 SERVER_URL = os.environ.get('SERVER_URL', 'http://localhost:10000')
 
-# إعدادات خادم البريد الإلكتروني (SMTP)
 SMTP_SERVER = os.environ.get('SMTP_SERVER', '://gmail.com')
 SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
 SMTP_USER = os.environ.get('SMTP_USER', 'your_bot_email@gmail.com')
 SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', 'your_email_app_password')
 
-# ربط بايننس الآمن
 exchange = ccxt.binance({
-    'apiKey': os.environ.get('BINANCE_API_KEY', 'ضع_API_الجديد_هنا'),
-    'secret': os.environ.get('BINANCE_API_SECRET', 'ضع_SECRET_الجديد_هنا'),
+    'apiKey': os.environ.get('BINANCE_API_KEY', 'ضع_API_الجديد_هنا'), 
+    'secret': os.environ.get('BINANCE_API_SECRET', 'ضع_SECRET_الجديد_هنا'), 
     'enableRateLimit': True,
     'options': {'defaultType': 'future'}
 })
 
-# التحديث الحاسم: استقبال جميع الاشتراكات والعمولات التراكمية عبر عنوان محفظة البيتكوين الحقيقي لعبد الله في رين
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
-
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'AVAX/USDT']
 
-# متغيرات النظام المالية والأمنية الحية
 accumulated_my_profit = 0.0
-total_subscription_earnings = 0.0 
+total_subscription_earnings = 0.0  
 weekly_trading_profits = 0.0       
-new_subscribers_count = 0         
+new_subscribers_count = 0          
 
-users_db = {}         
+users_db = {}          
 verified_ips_db = {}   
-pending_otps = {}     
+pending_otps = {}      
 
 current_admin_token = ""
 token_expiry_date = datetime.now()
@@ -65,11 +59,11 @@ GOOGLE_TRANSLATE_SCRIPT = '''
 
 def get_user_ip():
     if request.headers.get('X-Forwarded-For'):
-        return request.headers.get('X-Forwarded-For').split(',').strip()
+        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
     return request.remote_addr
 
 def is_ip_authorized():
-    if session.get('logged_in') and session.get('user_email') == ADMIN_EMAIL: return True 
+    if session.get('logged_in') and session.get('user_email') == ADMIN_EMAIL: return True  
     user_ip = get_user_ip()
     if user_ip in verified_ips_db:
         if datetime.now() < verified_ips_db[user_ip]: return True
@@ -98,7 +92,7 @@ def weekly_financial_report_scheduler():
             kuwait_now = datetime.now(kuwait_tz)
             if kuwait_now.weekday() == 0 and kuwait_now.hour == 3 and kuwait_now.minute == 0:
                 total_new_investment = sum(u['investment_amount'] for u in users_db.values() if u.get('is_new_this_week', True))
-                report_body = f"""مرحباً عبد الله،\n\nإليك التقرير المالي الأسبوعي لبوت الكويت (مجدول الساعة 3:00 فجراً):\n\n📊 إحصائيات المشتركين الجدد:\n• عدد المشتركين الجدد: {new_subscribers_count} مستخدم\n• إجمالي استثماراتهم المودعة: ${total_new_investment:.2f} USDT\n\n💰 كشف الدخل الصافي لـ Rain:\n• الدخل المحقق من رسوم الاشتراكات: ${total_subscription_earnings:.2f} USD\n• أرباحك الصافية التداولات (نسبة الـ 50%): ${weekly_trading_profits:.2f} USDT (تم تحويل الإجمالي كـ BTC لـ Rain)\n\nنظام التقارير المالية الآلي."""
+                report_body = f"مرحباً عبد الله،\n\nإليك التقرير المالي الأسبوعي لبوت الكويت:\n\n📊 إحصائيات المشتركين الجدد:\n• عدد المشتركين الجدد: {new_subscribers_count} مستخدم\n• إجمالي استثماراتهم المودعة: ${total_new_investment:.2f} USDT\n\n💰 كشف الدخل الصافي لـ Rain:\n• الدخل من الاشتراكات: ${total_subscription_earnings:.2f} USD\n• أرباحك الصافية (50%): ${weekly_trading_profits:.2f} USDT\n\nتم التحويل تلقائياً كـ BTC لـ Rain."
                 send_custom_email(ADMIN_EMAIL, "📊 التقرير المالي والإحصائي الأسبوعي - بوت الكويت", report_body)
                 new_subscribers_count = 0
                 weekly_trading_profits = 0.0
@@ -119,7 +113,7 @@ def notifications_scheduler():
                 if 'expiry' in notify_prefs and now_dt >= expiry_dt and u_data.get('status') == 'نشط ومتابع':
                     u_data['status'] = 'منتهي الصلاحية'
                     send_custom_email(u_email, "⚠️ تنبيه انتهاء العقد - بوت الكويت", f"عزيزي {u_data['username']}، انتهت مدة اشتراكك الاستثماري.")
-                report_body = f"مرحباً {u_data['username']}، تقريرك الاستثماري الدوري من بوت الكويت.\nرأس المال: ${u_data['investment_amount']} USDT.\nالحالة: {u_data['status']}."
+                report_body = f"مرحباً {u_data['username']}، تقريرك الاستثماري الدوري.\nرأس المال: ${u_data['investment_amount']} USDT.\nالحالة: {u_data['status']}."
                 if 'daily' in notify_prefs: send_custom_email(u_email, "📊 تقريرك اليومي - بوت الكويت", report_body)
                 if 'weekly' in notify_prefs and now_dt.weekday() == 0: send_custom_email(u_email, "📈 تقريرك الأسبوعي - بوت الكويت", report_body)
         except: pass
@@ -186,14 +180,14 @@ def register():
             'duration': duration, 'payment_method': payment_method,
             'investment_amount': investment_amount, 'status': 'نشط ومتابع',
             'notification_preferences': notification_preferences,
-            'join_datetime': datetime.now(), 'is_new_this_week': True 
+            'join_datetime': datetime.now(), 'is_new_this_week': True  
         }
         trigger_funds_routing(investment_amount)
-
+        
         otp = str(random.randint(100000, 999999))
         pending_otps[email] = otp
         send_custom_email(email, '🔒 رمز تحقق الأمن - بوت الكويت', f"رمز التحقق هو: {otp}")
-
+        
         session['logged_in'] = True
         session['user_email'] = email
         return redirect(url_for('verify_otp_page'))
@@ -207,3 +201,7 @@ def register():
     <head><meta charset="UTF-8"><title>إنشاء حساب</title></head>
     <body style="background-color: #0d0d0d; color: white; font-family: sans-serif; padding: 20px;">
         {GOOGLE_TRANSLATE_SCRIPT}
+        <div style="max-width: 520px; margin: 0 auto; background: #141414; padding: 30px; border-radius: 15px; border: 1px solid #ffcc00;">
+            <h2 style="color: #ffcc00; text-align:center;">🤖 إنشاء حساب مستثمر جديد</h2>
+            <form method="POST">
+                <input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br>
