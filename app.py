@@ -14,17 +14,17 @@ import ccxt
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'kuwaiti_bot_secure_session_key')
 
-ADMIN_EMAIL = os.environ.get('BOT_ADMIN_EMAIL', "alabod213@gmail.com")
-SERVER_URL = os.environ.get('SERVER_URL', 'http://localhost:10000')
+ADMIN_EMAIL = "alabod213@gmail.com"
+SERVER_URL = "https://onrender.com"
 
-SMTP_SERVER = os.environ.get('SMTP_SERVER', '://gmail.com')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
-SMTP_USER = os.environ.get('SMTP_USER', 'your_bot_email@gmail.com')
-SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD', 'your_email_app_password')
+SMTP_SERVER = "://gmail.com"
+SMTP_PORT = 587
+SMTP_USER = "alabod213@gmail.com"
+SMTP_PASSWORD = "gdxeeeonfhdcsqao"
 
 exchange = ccxt.binance({
-    'apiKey': os.environ.get('BINANCE_API_KEY', 'ضع_API_الجديد_هنا'), 
-    'secret': os.environ.get('BINANCE_API_SECRET', 'ضع_SECRET_الجديد_هنا'), 
+    'apiKey': os.environ.get('BINANCE_API_KEY', 'V0l1KbmIggXAoNjOtCapBT2FX0aGUx4EdsgySrRNOjROVAraZ0SZpFXEPjvRT0Cy'), 
+    'secret': os.environ.get('BINANCE_API_SECRET', 'Spp4vhqManMIj9DcmQh1ATaXQXBCuPOs9pwRAs63TjxVQV83KTK7qu9hOJAqDndS'), 
     'enableRateLimit': True,
     'options': {'defaultType': 'future'}
 })
@@ -92,13 +92,13 @@ def weekly_financial_report_scheduler():
             kuwait_now = datetime.now(kuwait_tz)
             if kuwait_now.weekday() == 0 and kuwait_now.hour == 3 and kuwait_now.minute == 0:
                 total_new_investment = sum(u['investment_amount'] for u in users_db.values() if u.get('is_new_this_week', True))
-                report_body = f"مرحباً عبد الله،\n\nإليك التقرير المالي الأسبوعي لبوت الكويت:\n\n📊 إحصائيات المشتركين الجدد:\n• عدد المشتركين الجدد: {new_subscribers_count} مستخدم\n• إجمالي استثماراتهم المودعة: ${total_new_investment:.2f} USDT\n\n💰 كشف الدخل الصافي لـ Rain:\n• الدخل من الاشتراكات: ${total_subscription_earnings:.2f} USD\n• أرباحك الصافية (50%): ${weekly_trading_profits:.2f} USDT\n\nتم التحويل تلقائياً كـ BTC لـ Rain."
+                report_body = f"مرحباً عبد الله،\\n\\nإليك التقرير المالي الأسبوعي لبوت الكويت:\\n\\n📊 إحصائيات المشتركين الجدد:\\n• عدد المشتركين الجدد: {new_subscribers_count} مستخدم\\n• إجمالي استثماراتهم المودعة: ${total_new_investment:.2f} USDT\\n\\n💰 كشف الدخل الصافي لـ Rain:\\n• الدخل من الاشتراكات: ${total_subscription_earnings:.2f} USD\\n• أرباحك الصافية (50%): ${weekly_trading_profits:.2f} USDT"
                 send_custom_email(ADMIN_EMAIL, "📊 التقرير المالي والإحصائي الأسبوعي - بوت الكويت", report_body)
                 new_subscribers_count = 0
                 weekly_trading_profits = 0.0
                 for u in users_db.values(): u['is_new_this_week'] = False
                 time.sleep(60)
-        except Exception as e: print(f"خطأ في مجدول التقارير: {e}")
+        except: pass
         time.sleep(30)
 
 def notifications_scheduler():
@@ -113,7 +113,7 @@ def notifications_scheduler():
                 if 'expiry' in notify_prefs and now_dt >= expiry_dt and u_data.get('status') == 'نشط ومتابع':
                     u_data['status'] = 'منتهي الصلاحية'
                     send_custom_email(u_email, "⚠️ تنبيه انتهاء العقد - بوت الكويت", f"عزيزي {u_data['username']}، انتهت مدة اشتراكك الاستثماري.")
-                report_body = f"مرحباً {u_data['username']}، تقريرك الاستثماري الدوري.\nرأس المال: ${u_data['investment_amount']} USDT.\nالحالة: {u_data['status']}."
+                report_body = f"مرحباً {u_data['username']}، تقريرك الاستثماري الدوري.\\nرأس المال: ${u_data['investment_amount']} USDT.\\nالحالة: {u_data['status']}."
                 if 'daily' in notify_prefs: send_custom_email(u_email, "📊 تقريرك اليومي - بوت الكويت", report_body)
                 if 'weekly' in notify_prefs and now_dt.weekday() == 0: send_custom_email(u_email, "📈 تقريرك الأسبوعي - بوت الكويت", report_body)
         except: pass
@@ -126,7 +126,7 @@ def admin_token_scheduler():
             current_admin_token = secrets.token_hex(16)
             token_expiry_date = datetime.now() + timedelta(days=1)
             admin_link = f"{SERVER_URL}/secure-admin-entry/{current_admin_token}"
-            send_custom_email(ADMIN_EMAIL, "🔑 رابط الإدارة اليومي المتجدد - بوت الكويت", f"رابط الإدارة المشفر لليوم:\n{admin_link}")
+            send_custom_email(ADMIN_EMAIL, "🔑 رابط الإدارة اليومي المتجدد - بوت الكويت", f"رابط الإدارة المشفر لليوم:\\n{admin_link}")
         except: pass
         time.sleep(86400)
 
@@ -168,7 +168,7 @@ def register():
         notification_preferences = request.form.getlist('notifications')
 
         if not request.form.get('legal_agree') or email in users_db or email == ADMIN_EMAIL:
-            return '''<script>alert("خطأ في البيانات أو مسجل مسبقاً."); window.history.back();</script>'''
+            return '''<script>alert("خطأ في البيانات."); window.history.back();</script>'''
 
         final_price = calculate_subscription_price(plan, duration)
         total_subscription_earnings += final_price
@@ -202,6 +202,7 @@ def register():
     <body style="background-color: #0d0d0d; color: white; font-family: sans-serif; padding: 20px;">
         {GOOGLE_TRANSLATE_SCRIPT}
         <div style="max-width: 520px; margin: 0 auto; background: #141414; padding: 30px; border-radius: 15px; border: 1px solid #ffcc00;">
-            <h2 style="color: #ffcc00; text-align:center;">🤖 إنشاء حساب مستثمر جديد</h2>
+            <h2>🤖 إنشاء حساب مستثمر جديد</h2>
             <form method="POST">
                 <input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br>
+                <input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br>
