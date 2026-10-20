@@ -11,9 +11,9 @@ ADMIN_EMAIL = "alabod213@gmail.com"
 SECURITY_CODE = "96694489"
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
 
+# مصفوفة رادار أصول بايننس القيادية لعام 2026
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'BNB/USDT']
 
-# ربط مباشر وحقيقي بمحرك العقود الآجلة الفعلي لبايننس لتنفيذ الصفقات حياً بالثانية
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
     'secret': os.environ.get('BINANCE_API_SECRET'), 
@@ -22,19 +22,34 @@ exchange = ccxt.binance({
 })
 
 users_db = {}
+total_subscription_earnings = 0.0
 cumulative_bot_profits = 0.0
 
-def calculate_dynamic_subscription_fee(plan):
+def calculate_dynamic_subscription_fee(plan, email):
     kuwait_tz = pytz.timezone('Asia/Kuwait')
     now = datetime.now(kuwait_tz)
     base_prices = {'weekly': 19.99, 'monthly': 49.99, 'yearly': 99.99}
     final_price = base_prices.get(plan, 49.99)
-    is_weekend = now.weekday() in (4, 5) # الجمعة والسبت للكويت - تم إغلاق القوس البرمجي بنجاح لمنع خطأ 500
-    
+    user_record = users_db.get(email, {})
+    past_payments = user_record.get('completed_payments_count', 0)
+
+    if plan == 'weekly' and past_payments > 0 and (past_payments % 3 == 0):
+        return 0.0, "🎁 عرض Loyalty: الأسبوع الرابع مجاني بالكامل!"
+    if plan == 'monthly' and past_payments > 0 and (past_payments % 3 == 0):
+        return 0.0, "🎁 عرض Loyalty: الشهر الرابع مجاني بالكامل!"
+
+    HOLIDAYS_2026 = [(1, 1), (2, 25), (2, 26), (3, 20), (5, 27), (6, 16)]
+    is_holiday = (now.month, now.day) in HOLIDAYS_2026
+    is_weekend = now.weekday() in (4, 5)
+
+    if is_holiday:
+        return round(max(0.0, final_price - 10.0), 2), "🌙 عروض الأعياد والمناسبات: خصم $10 فوري لـ 24 ساعة!"
     if is_weekend:
-        if plan == 'weekly': return round(max(0.0, final_price - 2.0), 2), "Weekend Live Discount Active!"
-        if plan == 'monthly': return round(max(0.0, final_price - 5.0), 2), "Weekend Live Discount Active!"
-    return round(final_price, 2), "Standard Price Plan"
+        if plan == 'weekly': return round(max(0.0, final_price - 2.0), 2), "⚡ عروض الويكند الحية: خصم $2 على الأسبوعي!"
+        if plan == 'monthly': return round(max(0.0, final_price - 5.0), 2), "⚡ عروض الويكند الحية: خصم $5 على الشهري!"
+        if plan == 'yearly': return round(max(0.0, final_price - 10.0), 2), "⚡ عروض الويكند الحية: خصم $10 على السنوي!"
+    
+    return round(final_price, 2), "💎 السعر القياسي الفوري للباقة."
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">Market Radar Summary</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
@@ -68,70 +83,110 @@ def login():
                 if free_usdt and float(free_usdt) > 0: live_balance = round(float(free_usdt), 2)
             except: pass
             users_db[ADMIN_EMAIL] = {
-                'username': 'Al-Abod Admin', 'amount': live_balance, 'status': 'Active', 'current_asset': 'Auto Scan'
+                'username': 'المشرف العام عبد الله 👑', 'password': SECURITY_CODE, 'plan': 'سيادي (إشراف)', 'amount': live_balance,
+                'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'is_approved': True, 'completed_payments_count': 1, 'created_at': time.time(),
+                'pending_deposit': 0.0, 'pending_withdrawal': 0.0, 'user_profits': 0.0, 'current_asset': 'تحديد تلقائي مرن لقنوات السوق'
             }
             return redirect(url_for('admin_panel'))
-        return '<script>alert("Invalid Credentials!"); window.history.back();</script>'
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:60px;"><div style="background:#141414; max-width:400px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form></div></body></html>'
-@app.route('/admin-panel')
+        if email in users_db and code == users_db[email]['password']:
+            session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
+            return redirect(url_for('user_dashboard'))
+        return '<script>alert("البيانات غير صحيحة!"); window.history.back();</script>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:60px;"><div style="background:#141414; max-width:400px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p>{get_light_market_widget()}</div></body></html>'
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if request.method == 'POST':
+        email = request.form.get('email').strip().lower()
+        if email == ADMIN_EMAIL:
+            return f'<script>alert("أهلاً بالمشرف عبد الله، كود أمانك الثابت هو: {SECURITY_CODE}"); window.location.href="/login";</script>'
+        if email in users_db:
+            user_pass = users_db[email]['password']
+            return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
+        return '<script>alert("هذا البريد غير مسجل!"); window.history.back();</script>'
+    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = request.form.get('email').strip().lower()
+        password = request.form.get('password')
+        plan = request.form.get('plan')
+        amount = float(request.form.get('amount', 0))
+        if amount < 50.0:
+            return '<script>alert("الحد الادنى للاستثمار هو 50 دولار لحماية الصفقات."); window.location.href="/register";</script>'
+        if email in users_db or email == ADMIN_EMAIL: return '<script>alert("مسجل مسبقا!"); window.location.href="/register";</script>'
+        users_db[email] = {
+            'username': username, 'password': password, 'plan': plan, 'amount': amount, 
+            'status': 'فترة تجريبية مجانية نشطة (7 أيام) 🎁', 'is_approved': True, 
+            'completed_payments_count': 0, 'created_at': time.time(), 
+            'pending_deposit': 0.0, 'pending_withdrawal': 0.0,
+            'user_profits': 0.0, 'current_asset': 'تحديد تلقائي مرن لقنوات السوق'
+        }
+        session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
+        return redirect(url_for('user_dashboard'))
+    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:20px; padding-top:40px;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
+
+@app.route('/payment', methods=['GET', 'POST'])
+def payment_page():
+    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
+    email = session.get('user_email'); u_info = users_db.get(email, {})
+    if not u_info: return redirect(url_for('login'))
+    if u_info.get('status') == 'نشط ومتابع ومحمي بالكامل 🛡️': return redirect(url_for('user_dashboard'))
+    required_fee, discount_note = calculate_dynamic_subscription_fee(u_info.get('plan'), email)
+    if request.method == 'POST':
+        global total_subscription_earnings; total_subscription_earnings += float(required_fee)
+        u_info['status'] = 'تم تحويل رسوم Rain - بانتظار مراجعة وتفعيل المشرف عبد الله ⏳'
+        return '<script>alert("تم إرسال معاملتك للمشرف عبد الله! ستفتح لوحتك فور تأكيد التحويل."); window.location.href="/user-dashboard";</script>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding-top:60px;"><div style="max-width:420px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>💳 بوابة تحويل رسوم الاشتراك (محفظة Rain)</h2><p style="color:#00ff00; font-weight:bold;">المبلغ المطلوب: ${required_fee} USD</p><p style="color:#ffcc00; font-size:13px;">📌 {discount_note}</p><div style="background:#222; padding:12px; border-radius:5px; text-align:center; font-family:monospace; color:#ffcc00; word-break:break-all;">{RAIN_BITCOIN_ADDRESS}</div><br><form method="POST"><button type="submit" style="background:#00ff00; color:black; width:100%; padding:14px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">لقد قمت بالتحويل، أرسل المعاملة للمشرف 🚀</button></form></div></body></html>'
+
+@app.route('/admin-panel', methods=['GET', 'POST'])
 def admin_panel():
     if not session.get('logged_in') or session.get('role') != 'admin': return redirect(url_for('login'))
     u = users_db.get(ADMIN_EMAIL, {})
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:900px; margin:0 auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>👑 لوحة الإشراف العليا والاستثمار السيادي للمشرف عبد الله</h2><p>رصيدك الحالي المباشر في بايننس: <b style="color:#00ff00;">${u.get("amount", 362.41)} USDT</b></p><p>الأصل المستثمر به حسابك الآن: <b style="color:#00e5ff;">{u.get("current_asset", "Auto Scan")}</b></p><p>صافي الأرباح التراكمية المحققة: <b style="color:#00ff00;">${u.get("user_profits", 0.0):.2f} USDT 📈</b></p>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">↩️ خروج آمن</a></div></body></html>'
+    live_balance = u.get('amount', 362.41)
+    
+    if request.method == 'POST':
+        action = request.form.get('action'); target_email = request.form.get('user_email')
+        if target_email in users_db:
+            if action == 'approve_fees':
+                users_db[target_email]['is_approved'] = True
+                users_db[target_email]['status'] = 'تم تأكيد رسوم رين - بانتظار إيداع رأس مال بايننس 💰'
+            elif action == 'approve_investment':
+                users_db[target_email]['status'] = 'نشط ومتابع ومحمي بالكامل 🛡️'
+                users_db[target_email]['completed_payments_count'] += 1
+            elif action == 'approve_deposit':
+                dep_amt = float(request.form.get('deposit_amount', 0))
+                users_db[target_email]['amount'] += dep_amt
+                users_db[target_email]['status'] = 'نشط ومتابع ومحمي بالكامل 🛡️'
+            elif action == 'approve_withdrawal':
+                users_db[target_email]['amount'] -= users_db[target_email]['pending_withdrawal']
+                users_db[target_email]['pending_withdrawal'] = 0.0
+                users_db[target_email]['status'] = 'انتهت الفترة التجريبية (7 أيام) - بانتظار دفع الاشتراك ⏳'
+        return redirect(url_for('admin_panel'))
+        
+    rows = ""
+    for k, v in users_db.items():
+        btn_html = ""
+        if k == ADMIN_EMAIL:
+            status_display = "<span style='color:#00ffff; font-weight:bold;'>حسابك الاستثماري الإداري نشط</span>"
+        else:
+            status_display = v['status']
+            if 'بانتظار دفع الاشتراك' in v['status'] or 'تم تحويل رسوم Rain' in v['status']:
+                btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_fees"><button type="submit" style="background:#00ff00; color:black; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ تأكيد رسوم Rain</button></form>'
+            elif 'بانتظار إيداع رأس مال بايننس' in v['status'] or 'تم إرسال رأس المال' in v['status']:
+                btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_investment"><button type="submit" style="background:#00bfff; color:black; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ تأكيد إيداع بايننس</button></form>'
+            elif 'قيد مراجعة إيداع الأموال الإضافية' in v['status']:
+                btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="deposit_amount" value="{v.get("pending_deposit", 0)}"><input type="hidden" name="action" value="approve_deposit"><button type="submit" style="background:#00ff00; color:black; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ موافقة شحن الرصيد</button></form>'
+            elif 'قيد مراجعة طلب السحب' in v['status']:
+                btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_withdrawal"><button type="submit" style="background:#ff3333; color:white; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ موافقة سحب الأموال</button></form>'
+        rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v.get('username', 'مستثمر')}</td><td>{k}</td><td>${v.get('amount', 0.0):.2f}</td><td style='color:#00ff00; font-weight:bold;'>${v.get('user_profits', 0.0):.2f}</td><td style='color:#00e5ff;'>{v.get('current_asset', 'لا يوجد صفقات')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
+        
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:1100px; margin:0 auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>👑 لوحة الإشراف العليا والاستثمار السيادي للمشرف عبد الله</h2><p>رصيدك العام المباشر في بايننس: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>أرباح رسوم رين الموثقة: <b style="color:#ffcc00;">${total_subscription_earnings:.2f} USD</b></p><p>صندوق تتبع سحوبات أرباح بايننس لـ Rain: <b style="color:#00e5ff;">${cumulative_bot_profits:.2f} / $100.00</b></p><hr style="border-color:#333;"><h3>👥 كشف وتحكم شامل بالمحفظة، المستثمرين... وأرباحك المباشرة:</h3><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>الاسم الكلي</th><th>البريد الإلكتروني</th><th>رأس المال الحالي</th><th>الأرباح المحققة 📈</th><th>الأصل المستثمر به حالياً</th><th>الحالة العامة والترخيص</th><th>الإجراء المالي الفوري</th></thead><tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">↩️ خروج آمن</a></div></body></html>'
 
-@app.route('/logout')
-def logout():
-    session.clear(); return redirect(url_for('login'))
-
-def auto_trading_engine():
-    crypto_assets = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
-    commodity_assets = ['PAXG/USDT', 'BNB/USDT']
-    while True:
-        try:
-            balance = exchange.fetch_balance()
-            free = balance['free'].get('USDT', 0)
-            current_free = float(free) if free else 362.41
-            
-            if current_free > 15:
-                # تخصيص حصة ذكية من المحفظة تتعدى الحدود الدنيا للتنفيذ الصارم في بايننس
-                capital_share = current_free * 0.45
-                ticker_paxg = exchange.fetch_ticker('PAXG/USDT')
-                required_margin_paxg = (0.01 * ticker_paxg['last']) / 20.0
-                
-                active_assets = list(crypto_assets)
-                if required_margin_paxg <= capital_share:
-                    active_assets.extend(commodity_assets)
-                    
-                for asset in active_assets:
-                    ticker = exchange.fetch_ticker(asset)
-                    current_price = ticker['last']
-                    
-                    order_side = 'buy'
-                    asset_change = ticker['percentage'] if ticker['percentage'] is not None else 0.0
-                    if asset_change < -0.1: order_side = 'sell'
-                    
-                    order_value = capital_share * 20.0
-                    amt = order_value / current_price
-                    
-                    # ضبط وتنسيق أرقام اللوت العشرية بدقة تامة لتفادي الرفض الصامت من بايننس
-                    amt_fmt = exchange.amount_to_precision(asset, amt)
-                    
-                    if float(amt_fmt) > 0:
-                        try: exchange.set_leverage(20, asset)
-                        except: pass
-                        
-                        # إرسال أمر السوق الحقيقي والمباشر لحساب العقود الآجلة بالأموال
-                        exchange.create_market_order(asset, order_side, amt_fmt)
-                        
-                        direction_label = "Long" if order_side == 'buy' else "Short"
-                        display_asset = f"Gold (PAXG) {direction_label}" if "PAXG" in asset else (f"Oil (BNB) {direction_label}" if "BNB" in asset else f"{asset.replace('/USDT','')} {direction_label}")
-                        
-                        if ADMIN_EMAIL in users_db:
-                            users_db[ADMIN_EMAIL]['current_asset'] = display_asset
-                            users_db[ADMIN_EMAIL]['user_profits'] += (capital_share * 0.005)
-        except: pass
-        time.sleep(3.0)
-
-threading.Thread(target=auto_trading_engine, daemon=True).start()
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000)); app.run(host='0.0.0.0', port=port)
+@app.route('/user-dashboard', methods=['GET', 'POST'])
+def user_dashboard():
+    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
+    email = session.get('user_email'); u = users_db.get(email, {})
+    if not u: return redirect(url_for('login'))
+    days_passed = (time.time() - u['created_at']) / 86400
