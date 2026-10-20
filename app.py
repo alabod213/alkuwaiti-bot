@@ -11,17 +11,21 @@ ADMIN_EMAIL = "alabod213@gmail.com"
 SECURITY_CODE = "96694489"
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
 
+# مصفوفة رادار أصول بايننس المعتمدة للتحليل اللحظي
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'BNB/USDT']
 
+# إعداد المنظومة البرمجية المباشرة للربط الفعلي والتداول الحقيقي بالأموال
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
     'secret': os.environ.get('BINANCE_API_SECRET'), 
-    'enableRateLimit': True, 'options': {'defaultType': 'future'}
+    'enableRateLimit': True, 
+    'options': {'defaultType': 'future'} # ربط مباشر بمحرك العقود الآجلة الفعلي لبايننس
 })
 
 users_db = {}
 total_subscription_earnings = 0.0
 cumulative_bot_profits = 0.0
+
 def calculate_dynamic_subscription_fee(plan, email):
     kuwait_tz = pytz.timezone('Asia/Kuwait')
     now = datetime.now(kuwait_tz)
@@ -37,7 +41,7 @@ def calculate_dynamic_subscription_fee(plan, email):
 
     HOLIDAYS_2026 = [(1, 1), (2, 25), (2, 26), (3, 20), (5, 27), (6, 16)]
     is_holiday = (now.month, now.day) in HOLIDAYS_2026
-    is_weekend = now.weekday() in (4, 5) # تم إغلاق وتثبيت القوس لتقويم الجمعة والسبت بدقة لمنع خطأ 500
+    is_weekend = now.weekday() in (4, 5)
 
     if is_holiday:
         return round(max(0.0, final_price - 10.0), 2), "Holiday Offer: $10 instant discount active for 24h!"
@@ -47,7 +51,6 @@ def calculate_dynamic_subscription_fee(plan, email):
         if plan == 'yearly': return round(max(0.0, final_price - 10.0), 2), "Weekend Live Offer: $10 discount on yearly plan!"
     
     return round(final_price, 2), "Standard Price Plan"
-
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">Market Radar Summary</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
@@ -62,6 +65,7 @@ def get_light_market_widget():
         html += '<p style="color:#aaa; font-size:12px; margin:0;">Updating rates from Binance Futures Secure Grid...</p>'
     html += '</div></div>'
     return html
+
 @app.route('/')
 def index():
     return redirect(url_for('login'))
@@ -73,6 +77,7 @@ def login():
         code = request.form.get('code')
         if email == ADMIN_EMAIL and code == SECURITY_CODE:
             session['logged_in'] = True; session['role'] = 'admin'
+            
             live_balance = 362.41
             try:
                 balance = exchange.fetch_balance()
@@ -80,6 +85,7 @@ def login():
                 if free_usdt and float(free_usdt) > 0:
                     live_balance = round(float(free_usdt), 2)
             except: pass
+                
             if ADMIN_EMAIL not in users_db:
                 users_db[ADMIN_EMAIL] = {
                     'username': 'Al-Abod Admin', 'password': SECURITY_CODE, 'plan': 'Sovereign (Admin)', 'amount': live_balance,
@@ -88,6 +94,7 @@ def login():
                 }
             else:
                 users_db[ADMIN_EMAIL]['amount'] = live_balance
+                
             return redirect(url_for('admin_panel'))
         if email in users_db and code == users_db[email]['password']:
             session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
@@ -103,22 +110,9 @@ def forgot_password():
             return f'<script>alert("Welcome Abdullah! Your secure login code is: {SECURITY_CODE}"); window.location.href="/login";</script>'
         if email in users_db:
             user_pass = users_db[email]['password']
-            return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #00bfff; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
+            return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #00bfff; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
         return '<script>alert("Email not registered!"); window.history.back();</script>'
-    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
-
-@app.route('/payment', methods=['GET', 'POST'])
-def payment_page():
-    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
-    email = session.get('user_email'); u_info = users_db.get(email, {})
-    if not u_info: return redirect(url_for('login'))
-    if u_info.get('status') == 'نشط ومتابع ومحمي بالكامل': return redirect(url_for('user_dashboard'))
-    required_fee, discount_note = calculate_dynamic_subscription_fee(u_info.get('plan'), email)
-    if request.method == 'POST':
-        global total_subscription_earnings; total_subscription_earnings += float(required_fee)
-        u_info['status'] = 'تم تحويل رسوم Rain - بانتظار مراجعة وتفعيل المشرف عبد الله'
-        return '<script>alert("تم إرسال معاملتك للمشرف عبد الله! ستفتح لوحتك فور تأكيد التحويل."); window.location.href="/user-dashboard";</script>'
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding-top:60px;"><div style="max-width:420px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>💳 بوابة تحويل رسوم الاشتراك (محفظة Rain)</h2><p style="color:#00ff00; font-weight:bold;">المبلغ المطلوب: ${required_fee} USD</p><p style="color:#ffcc00; font-size:13px;">📌 {discount_note}</p><div style="background:#222; padding:12px; border-radius:5px; text-align:center; font-family:monospace; color:#ffcc00; word-break:break-all;">{RAIN_BITCOIN_ADDRESS}</div><br><form method="POST"><button type="submit" style="background:#00ff00; color:black; width:14px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">لقد قمت بالتحويل، أرسل المعاملة للمشرف 🚀</button></form></div></body></html>'
+    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
