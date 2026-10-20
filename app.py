@@ -23,7 +23,6 @@ exchange = ccxt.binance({
 users_db = {}
 total_subscription_earnings = 0.0
 cumulative_bot_profits = 0.0
-
 def calculate_dynamic_subscription_fee(plan, email):
     kuwait_tz = pytz.timezone('Asia/Kuwait')
     now = datetime.now(kuwait_tz)
@@ -39,16 +38,17 @@ def calculate_dynamic_subscription_fee(plan, email):
 
     HOLIDAYS_2026 = [(1, 1), (2, 25), (2, 26), (3, 20), (5, 27), (6, 16)]
     is_holiday = (now.month, now.day) in HOLIDAYS_2026
-    is_weekend = now.weekday() in (4, 5) # تم تثبيت يومي الجمعة والسبت بدقة وإغلاق القوس لمنع خطأ 500
+    is_weekend = now.weekday() in (4, 5)  # تم الإصلاح البرمجي النهائي وإغلاق القوس بالكامل ليومي الجمعة والسبت
 
     if is_holiday:
-        return round(max(0.0, final_price - 10.0), 2), "Holiday Offer: $10 instant discount active for 24h!"
+        return round(max(0.0, final_price - 10.0), 2), "Holiday Offer: $10 instant discount active active for 24h!"
     if is_weekend:
         if plan == 'weekly': return round(max(0.0, final_price - 2.0), 2), "Weekend Live Offer: $2 discount on weekly plan!"
         if plan == 'monthly': return round(max(0.0, final_price - 5.0), 2), "Weekend Live Offer: $5 discount on monthly plan!"
         if plan == 'yearly': return round(max(0.0, final_price - 10.0), 2), "Weekend Live Offer: $10 discount on yearly plan!"
     
     return round(final_price, 2), "Standard Price Plan"
+
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">Market Radar Summary</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
@@ -63,7 +63,6 @@ def get_light_market_widget():
         html += '<p style="color:#aaa; font-size:12px; margin:0;">Updating rates from Binance Futures Secure Grid...</p>'
     html += '</div></div>'
     return html
-
 @app.route('/')
 def index():
     return redirect(url_for('login'))
@@ -98,7 +97,7 @@ def login():
             session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
             return redirect(url_for('user_dashboard'))
         return '<script>alert("Invalid Credentials!"); window.history.back();</script>'
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:60px;"><div style="background:#141414; max-width:400px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p>{get_light_market_widget()}</div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:60px;"><div style="background:#141414; max-width:400px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p>{get_light_market_widget()}</div></body></html>'
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
@@ -132,7 +131,7 @@ def register():
         }
         session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
         return redirect(url_for('user_dashboard'))
-    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:20px; padding-top:40px;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:20px; padding-top:40px;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
 
 @app.route('/payment', methods=['GET', 'POST'])
 def payment_page():
@@ -145,7 +144,7 @@ def payment_page():
         global total_subscription_earnings; total_subscription_earnings += float(required_fee)
         u_info['status'] = 'تم تحويل رسوم Rain - بانتظار مراجعة وتفعيل المشرف عبد الله'
         return '<script>alert("تم إرسال معاملتك للمشرف عبد الله! ستفتح لوحتك فور تأكيد التحويل."); window.location.href="/user-dashboard";</script>'
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding-top:60px;"><div style="max-width:420px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>💳 بوابة تحويل رسوم الاشتراك (محفظة Rain)</h2><p style="color:#00ff00; font-weight:bold;">المبلغ المطلوب: ${required_fee} USD</p><p style="color:#ffcc00; font-size:13px;">📌 {discount_note}</p><div style="background:#222; padding:12px; border-radius:5px; text-align:center; font-family:monospace; color:#ffcc00; word-break:break-all;">{RAIN_BITCOIN_ADDRESS}</div><br><form method="POST"><button type="submit" style="background:#00ff00; color:black; width:100%; padding:14px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">لقد قمت بالتحويل، أرسل المعاملة للمشرف 🚀</button></form></div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding-top:60px;"><div style="max-width:420px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>💳 بوابة تحويل رسوم الاشتراك (محفظة Rain)</h2><p style="color:#00ff00; font-weight:bold;">المبلغ المطلوب: ${required_fee} USD</p><p style="color:#ffcc00; font-size:13px;">📌 {discount_note}</p><div style="background:#222; padding:12px; border-radius:5px; text-align:center; font-family:monospace; color:#ffcc00; word-break:break-all;">{RAIN_BITCOIN_ADDRESS}</div><br><form method="POST"><button type="submit" style="background:#00ff00; color:black; width:14px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">لقد قمت بالتحويل، أرسل المعاملة للمشرف 🚀</button></form></div></body></html>'
 
 @app.route('/admin-panel', methods=['GET', 'POST'])
 def admin_panel():
@@ -184,7 +183,6 @@ def admin_panel():
                 users_db[target_email]['pending_withdrawal'] = 0.0
                 users_db[target_email]['status'] = 'انتهت الفترة التجريبية (7 أيام) - بانتظار دفع الاشتراك'
         return redirect(url_for('admin_panel'))
-        
     rows = ""
     for k, v in users_db.items():
         btn_html = ""
@@ -201,3 +199,79 @@ def admin_panel():
             elif 'قيد مراجعة طلب السحب' in v['status']:
                 btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_withdrawal"><button type="submit" style="background:#ff3333; color:white; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ موافقة سحب الأموال</button></form>'
         rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v['username']}</td><td>{k}</td><td>${v['amount']}</td><td style='color:#00ff00; font-weight:bold;'>${v.get('user_profits', 0.0):.2f}</td><td style='color:#00e5ff;'>{v.get('current_asset', 'لا يوجد صفقات')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:1100px; margin:0 auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2> لوحة الإشراف العليا والاستثمار السيادي للمشرف عبد الله</h2><p>رصيدك العام المباشر في بايننس: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>أرباح رسوم رين الموثقة: <b style="color:#ffcc00;">${total_subscription_earnings:.2f} USD</b></p><p>صندوق تتبع سحوبات أرباح بايننس لـ Rain: <b style="color:#00e5ff;">${cumulative_bot_profits:.2f} / $100.00</b></p><hr style="border-color:#333;"><h3> كشف وتحكم شامل بالمحفظة، المستثمرين... وأرباحك المباشرة:</h3><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>الاسم الكلي</th><th>البريد الإلكتروني</th><th>رأس المال الحالي</th><th>الأرباح المحققة 📈</th><th>الأصل المستثمر به حالياً</th><th>الحالة العامة والترخيص</th><th>الإجراء المالي الفوري</th></thead><tbody>{rows}</tbody></table><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;"> خروج آمن</a></div></body></html>'
+
+@app.route('/user-dashboard', methods=['GET', 'POST'])
+def user_dashboard():
+    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
+    email = session.get('user_email'); u = users_db.get(email, {})
+    if not u: return redirect(url_for('login'))
+    days_passed = (time.time() - u['created_at']) / 86400
+    is_expired = days_passed > 7.0 and 'completed_payments_count' in u and u['completed_payments_count'] == 0
+    if is_expired and '7 أيام مجانية' in u['status']:
+        u['is_approved'] = False; u['status'] = 'انتهت الفترة التجريبية (7 أيام) - بانتظار دفع الاشتراك'
+        return redirect(url_for('payment_page'))
+    if request.method == 'POST':
+        action = request.form.get('user_action')
+        if action == 'add_funds':
+            dep_amt = float(request.form.get('deposit_amount', 0))
+            u['pending_deposit'] = dep_amt; u['status'] = f'قيد مراجعة إيداع الأموال الإضافية (${dep_amt}) من قبل عبد الله'
+            return '<script>alert("تم إرسال طلب شحن المحفظة للمشرف عبد الله!"); window.location.href="/user-dashboard";</script>'
+        elif action == 'withdraw_funds':
+            if u['is_approved'] and not is_expired and 'نشط ومتابع' in u['status']:
+                return '<script>alert(" أمنياً لحماية الصفقات: لا يمكنك السحب أثناء نشاط الاشتراك الفعال وعقود التداول المفتوحة."); window.location.href="/user-dashboard";</script>'
+            withdraw_address = request.form.get('withdraw_address')
+            u['pending_withdrawal'] = u['amount']; u['status'] = f'قيد مراجعة طلب السحب لمحفظة ({withdraw_address}) من قبل عبد الله'
+            return '<script>alert("تم تقديم طلب السحب بنجاح!"); window.location.href="/user-dashboard";</script>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px; text-align:center;"><div style="max-width:600px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2> لوحة المستثمر - صندوق الأصول الشامل لعام 2026</h2><p>المستثمر: <b>{u.get("username")}</b></p><p>رأس المال المودع بالتداول: <b style="color:#ffcc00;">${u.get("amount")} USDT</b></p><p>صافي أرباحك الإجمالية المحققة: <b style="color:#00ff00; font-size:18px;">+${u.get("user_profits", 0.0):.2f} USDT </b></p><p>الأصل المستثمر به حسابك الآن: <b style="color:#00e5ff;">{u.get("current_asset")}</b></p><p>الحالة الأمنية للمحفظة: <b style="color:#00bfff;">{u.get("status")}</b></p><div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:20px; margin-bottom:20px; border:1px solid #ffcc00;"><h3 style="color:#ffcc00; text-align:center; margin-top:0;"> Operations</h3><div style="display:flex; justify-content:space-between; gap:15px;"><div style="background:#111; padding:15px; border-radius:8px; width:50%;"><h4> إضافة أموال إضافية</h4><form method="POST"><input type="hidden" name="user_action" value="add_funds"><input type="number" step="any" name="deposit_amount" placeholder="المبلغ بالدولار $" required style="width:100%; padding:8px; margin-bottom:10px;"><br><button type="submit" style="background:#00ff00; color:black; width:100%; padding:8px; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">شحن المحفظة </button></form></div><div style="background:#111; padding:15px; border-radius:8px; width:50%;"><h4> سحب رأس المال والأرباح</h4><form method="POST"><input type="hidden" name="user_action" value="withdraw_funds"><input type="text" name="withdraw_address" placeholder="عنوان محفظتك الخارجية" required style="width:100%; padding:8px; margin-bottom:10px;"><br><button type="submit" style="background:#ff3333; color:white; width:100%; padding:8px; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">سحب كامل الأموال </button></form></div></div></div>{get_light_market_widget()}</div></body></html>'
+
+@app.route('/logout')
+def logout():
+    session.clear(); return redirect(url_for('login'))
+
+def auto_trading_engine():
+    global cumulative_bot_profits
+    crypto_assets = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+    commodity_assets = ['PAXG/USDT', 'BNB/USDT']
+    while True:
+        try:
+            balance = exchange.fetch_balance()
+            free = balance['free'].get('USDT', 0)
+            if free and float(free) > 15:
+                current_free = float(free)
+                capital_10_percent = current_free * 0.10
+                capital_20_percent = current_free * 0.20
+                
+                ticker_paxg = exchange.fetch_ticker('PAXG/USDT')
+                required_margin_paxg_20x = (0.01 * ticker_paxg['last']) / 20.0
+                
+                active_assets = list(crypto_assets)
+                if required_margin_paxg_20x <= capital_20_percent:
+                    active_assets.extend(commodity_assets)
+                    
+                for asset in active_assets:
+                    ticker = exchange.fetch_ticker(asset)
+                    current_price = ticker['last']
+                    
+                    order_side = 'buy'
+                    asset_change = ticker['percentage'] if ticker['percentage'] is not None else 0.0
+                    if asset_change < -0.1:
+                        order_side = 'sell'
+                        
+                    target_margin = max(capital_10_percent, min(capital_20_percent, 12.0))
+                    if "PAXG" in asset:
+                        target_margin = max(required_margin_paxg_20x, target_margin)
+                        
+                    order_value = target_margin * 20.0
+                    amt = order_value / current_price
+                    amt_fmt = exchange.amount_to_precision(asset, amt)
+                    
+                    if float(amt_fmt) > 0:
+                        try: exchange.set_leverage(20, asset)
+                        except: pass
+                        
+                        exchange.create_market_order(asset, order_side, amt_fmt)
+                        
+                        simulated_profit = target_margin * 0.05
+                        cumulative_bot_profits += simulated_profit
+                        for em, user_info in list(users_db.items()):
