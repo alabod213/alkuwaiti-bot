@@ -41,7 +41,7 @@ def calculate_dynamic_subscription_fee(plan, email):
 
     HOLIDAYS_2026 = [(1, 1), (2, 25), (2, 26), (3, 20), (5, 27), (6, 16)]
     is_holiday = (now.month, now.day) in HOLIDAYS_2026
-    is_weekend = now.weekday() in [4, 5] # يوم الجمعة والسبت بالترتيب البرمجي الصحيح في الكويت
+    is_weekend = now.weekday() in [4, 5]
 
     if is_holiday:
         return round(max(0.0, final_price - 10.0), 2), "🌙 عروض الأعياد والمناسبات الدينية: خصم $10 فوري لـ 24 ساعة!"
@@ -78,18 +78,19 @@ def login():
         if email == ADMIN_EMAIL and code == SECURITY_CODE:
             session['logged_in'] = True; session['role'] = 'admin'
             
-            # تحديث فوري وجلب رصيد بايننس الحقيقي لتقييده كرأس مال لمحفظتك المدمجة
+            # جلب رصيد محفظة الفيوتشرز بأمان وتجنب التكرار المتداخل
+            live_balance = 60.42
             try:
                 balance = exchange.fetch_balance()
-                live_balance = round(balance['free'].get('USDT', 0), 2)
-                if live_balance <= 0: live_balance = 60.42
-            except:
-                live_balance = 60.42
+                free_usdt = balance['free'].get('USDT', 0)
+                if free_usdt and float(free_usdt) > 0:
+                    live_balance = round(float(free_usdt), 2)
+            except: pass
                 
             if ADMIN_EMAIL not in users_db:
                 users_db[ADMIN_EMAIL] = {
                     'username': 'المشرف العام عبد الله 👑', 'password': SECURITY_CODE, 'plan': 'سيادي (إشراف)', 'amount': live_balance,
-                    'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'is_approved': True, 'completed_payments_count': 1, 'created_at': time.time(),
+                    'status': 'حسابك الإستثماري الإداري نشط', 'is_approved': True, 'completed_payments_count': 1, 'created_at': time.time(),
                     'pending_deposit': 0.0, 'pending_withdrawal': 0.0, 'user_profits': 0.0, 'current_asset': 'PAXG/USDT (الذهب الرقمي)'
                 }
             else:
@@ -110,9 +111,9 @@ def forgot_password():
             return f'<script>alert("أهلاً بالمشرف عبد الله، كود أمانك الثابت هو: {SECURITY_CODE}"); window.location.href="/login";</script>'
         if email in users_db:
             user_pass = users_db[email]['password']
-            return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #00bfff; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
+            return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #00bfff; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
         return '<script>alert("هذا البريد غير مسجل!"); window.history.back();</script>'
-    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
+    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -123,7 +124,7 @@ def register():
         amount = float(request.form.get('amount', 0))
         
         if amount < 50.0:
-            return '<script>alert("🛑 عذراً! الحد الأدنى لإيداع رأس مال الاستثمار بعد الاشتراك هو 50 دولار لحماية صفقات المحفظة."); window.history.back();</script>'
+            return '<script>alert("🛑 عذراً! الحد الأدنى لإيداع رأس مال الاستثمار بعد الاشتراك هو 50 دولار لحماية صفقات المحفظة."); window.location.href="/register";</script>'
             
         if email in users_db or email == ADMIN_EMAIL: return '<script>alert("مسجل مسبقاً!"); window.history.back();</script>'
         
@@ -136,7 +137,7 @@ def register():
         }
         session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
         return redirect(url_for('user_dashboard'))
-    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:20px; padding-top:40px;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:20px; padding-top:40px;"><div style="max-width:400px; margin:0 auto; background:#141414; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
 
 @app.route('/payment', methods=['GET', 'POST'])
 def payment_page():
@@ -155,17 +156,18 @@ def payment_page():
 def admin_panel():
     if not session.get('logged_in') or session.get('role') != 'admin': return redirect(url_for('login'))
     
+    live_balance = 60.42
     try:
         balance = exchange.fetch_balance()
-        live_balance = round(balance['free'].get('USDT', 0), 2)
-        if live_balance <= 0: live_balance = 60.42
-    except:
-        live_balance = 60.42
+        free_usdt = balance['free'].get('USDT', 0)
+        if free_usdt and float(free_usdt) > 0:
+            live_balance = round(float(free_usdt), 2)
+    except: pass
 
     if ADMIN_EMAIL not in users_db:
         users_db[ADMIN_EMAIL] = {
             'username': 'المشرف العام عبد الله 👑', 'password': SECURITY_CODE, 'plan': 'سيادي (إشراف)', 'amount': live_balance,
-            'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'is_approved': True, 'completed_payments_count': 1, 'created_at': time.time(),
+            'status': 'حسابك الإستثماري الإداري نشط', 'is_approved': True, 'completed_payments_count': 1, 'created_at': time.time(),
             'pending_deposit': 0.0, 'pending_withdrawal': 0.0, 'user_profits': 0.0, 'current_asset': 'PAXG/USDT (الذهب الرقمي)'
         }
     else:
