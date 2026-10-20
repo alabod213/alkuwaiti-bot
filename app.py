@@ -13,7 +13,7 @@ RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42s
 
 # مصفوفة الأصول القيادية المفتوحة للتداول الحقيقي: العملات الرقمية + الذهب والفضة
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT']
-ASSETS_PRESET = ['🏆 الذهب العالمي (XAU/USD)', '🥈 الفضة النقية (XAG/USD)', '₿ البيتكوين القيادي (BTC/USDT)', '♦️ الإيثيريوم الذكي (ETH/USDT)', '☀️ السولانا السريعة (SOL/USDT)']
+ASSETS_PRESET = ['🏆 الذهب العالمي (XAU/USD)', '🥈 الفضة النية (XAG/USD)', '₿ البيتكوين القيادي (BTC/USDT)', '♦️ الإيثيريوم الذكي (ETH/USDT)', '☀️ السولانا السريعة (SOL/USDT)']
 
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
@@ -41,7 +41,7 @@ def calculate_dynamic_subscription_fee(plan, email):
 
     HOLIDAYS_2026 = [(1, 1), (2, 25), (2, 26), (3, 20), (5, 27), (6, 16)]
     is_holiday = (now.month, now.day) in HOLIDAYS_2026
-    is_weekend = now.weekday() in [4, 5]
+    is_weekend = now.weekday() in [4, 5] # تم تثبيت يومي الجمعة والسبت بالترتيب المعتمد
 
     if is_holiday:
         return round(max(0.0, final_price - 10.0), 2), "🌙 عروض الأعياد والمناسبات الدينية: خصم $10 فوري لـ 24 ساعة!"
@@ -54,7 +54,6 @@ def calculate_dynamic_subscription_fee(plan, email):
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">📊 أسعار ونبض الأصول القياسية والسلع حياً</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
-        # عرض الذهب والفضة كأسعار استرشادية حية ثابتة في الرادار الخارجي لضمان المظهر المؤسسي
         html += '<div style="background:#111; padding:8px; border-radius:5px; font-size:12px;"><b>الذهب العالمي</b><br><span style="color:#00ff00;">$2,045.20</span><br><span style="color:#00ff00; font-weight:bold;">+0.45%</span></div>'
         html += '<div style="background:#111; padding:8px; border-radius:5px; font-size:12px;"><b>الفضة النقية</b><br><span style="color:#00ff00;">$23.15</span><br><span style="color:#ff3333; font-weight:bold;">-0.12%</span></div>'
         for symbol in WATCHLIST[:3]:
@@ -106,13 +105,11 @@ def register():
         plan = request.form.get('plan')
         amount = float(request.form.get('amount', 0))
         
-        # فرض شرط الـ 50 دولار كحد أدنى لحماية أموال المستثمرين وامتثال بايننس
         if amount < 50.0:
             return '<script>alert("🛑 عذراً! الحد الأدنى لإيداع رأس مال الاستثمار بعد الاشتراك هو 50 دولار لحماية صفقات المحفظة."); window.history.back();</script>'
             
         if email in users_db or email == ADMIN_EMAIL: return '<script>alert("مسجل مسبقاً!"); window.history.back();</script>'
         
-        # تفعيل الـ 7 أيام المجانية الافتتاحية للمشترك مع حقول الأرباح والأصول الحالية
         users_db[email] = {
             'username': username, 'password': password, 'plan': plan, 'amount': amount, 
             'status': 'فترة تجريبية مجانية نشطة (7 أيام) 🎁', 'is_approved': True, 
