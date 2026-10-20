@@ -11,14 +11,18 @@ ADMIN_EMAIL = "alabod213@gmail.com"
 SECURITY_CODE = "96694489"
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
 
-# مصفوفة رادار أصول بايننس القيادية لعام 2026
+# الأصول القياسية المعتمدة للتداول الفعلي والمسح اللحظي المباشر لعام 2026
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'BNB/USDT']
 
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
     'secret': os.environ.get('BINANCE_API_SECRET'), 
     'enableRateLimit': True, 
-    'options': {'defaultType': 'future'}
+    'options': {
+        'defaultType': 'future',
+        'adjustForTimeSync': True,
+        'recvWindow': 60000
+    }
 })
 
 users_db = {}
@@ -85,7 +89,7 @@ def login():
             users_db[ADMIN_EMAIL] = {
                 'username': 'المشرف العام عبد الله 👑', 'password': SECURITY_CODE, 'plan': 'سيادي (إشراف)', 'amount': live_balance,
                 'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'is_approved': True, 'completed_payments_count': 1, 'created_at': time.time(),
-                'pending_deposit': 0.0, 'pending_withdrawal': 0.0, 'user_profits': 0.0, 'current_asset': 'تحديد تلقائي مرن لقنوات السوق'
+                'pending_deposit': 0.0, 'pending_withdrawal': 0.0, 'user_profits': 0.0, 'current_asset': 'جاري إطلاق الصفقات الحية...'
             }
             return redirect(url_for('admin_panel'))
         if email in users_db and code == users_db[email]['password']:
@@ -99,12 +103,12 @@ def forgot_password():
     if request.method == 'POST':
         email = request.form.get('email').strip().lower()
         if email == ADMIN_EMAIL:
-            return f'<script>alert("أهلاً بالمشرف عبد الله، كود أمانك الثابت هو: {SECURITY_CODE}"); window.location.href="/login";</script>'
+            return f'<script>alert("كود أمانك الثابت هو: {SECURITY_CODE}"); window.location.href="/login";</script>'
         if email in users_db:
             user_pass = users_db[email]['password']
             return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
         return '<script>alert("هذا البريد غير مسجل!"); window.history.back();</script>'
-    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
+    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -182,7 +186,7 @@ def admin_panel():
                 btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_withdrawal"><button type="submit" style="background:#ff3333; color:white; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ موافقة سحب الأموال</button></form>'
         rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v.get('username', 'مستثمر')}</td><td>{k}</td><td>${v.get('amount', 0.0):.2f}</td><td style='color:#00ff00; font-weight:bold;'>${v.get('user_profits', 0.0):.2f}</td><td style='color:#00e5ff;'>{v.get('current_asset', 'لا يوجد صفقات')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
         
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:1100px; margin:0 auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>👑 لوحة الإشراف العليا والاستثمار السيادي للمشرف عبد الله</h2><p>رصيدك العام المباشر في بايننس: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>أرباح رسوم رين الموثقة: <b style="color:#ffcc00;">${total_subscription_earnings:.2f} USD</b></p><p>صندوق تتبع سحوبات أرباح بايننس لـ Rain: <b style="color:#00e5ff;">${cumulative_bot_profits:.2f} / $100.00</b></p><hr style="border-color:#333;"><h3>👥 كشف وتحكم شامل بالمحفظة، المستثمرين... وأرباحك المباشرة:</h3><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>الاسم الكلي</th><th>البريد الإلكتروني</th><th>رأس المال الحالي</th><th>الأرباح المحققة 📈</th><th>الأصل المستثمر به حالياً</th><th>الحالة العامة والترخيص</th><th>الإجراء المالي الفوري</th></thead><tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">↩️ خروج آمن</a></div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:20px;"><div style="max-width:1100px; margin:0 auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>👑 لوحة الإشراف العليا والاستثمار السيادي للمشرف عبد الله</h2><p>رصيدك العام المباشر في بايننس: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>أرباح رسوم رين الموثقة: <b style="color:#ffcc00;">${total_subscription_earnings:.2f} USD</b></p><p>صندوق تتبع سحوبات أرباح بايننس لـ Rain: <b style="color:#00e5ff;">${cumulative_bot_profits:.2f} / $100.00</b></p><hr style="border-color:#333;"><h3>👥 كشف وتحكم شامل بالمحفظة، المستثمرين... وأرباحك المباشرة:</h3><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>الاسم الكلي</th><th>البريد الإلكتروني</th><th>رأس المال الحالي</th><th>الأرباح المحققة 📈</th><th>الأصل المستثمر به حالياً</th><th>الحالة العامة والترخيص</th><th>الإجراء المالي الفوري</th></thead><tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">↩️ تسجيل خروج آمن</a></div></body></html>'
 
 @app.route('/user-dashboard', methods=['GET', 'POST'])
 def user_dashboard():
