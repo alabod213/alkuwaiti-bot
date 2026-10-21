@@ -1,9 +1,7 @@
-Flask==3.0.2
-ccxt==4.2.42
-pytz==2024.1
-Werkzeug==3.0.1
-cryptography==42.0.5
-gunicorn==21.2.0
 
-
+Flask
+Werkzeug
+gunicorn
+ccxt
+cryptography
 
