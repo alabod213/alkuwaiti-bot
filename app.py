@@ -41,7 +41,8 @@ db_lock = threading.RLock()
 
 
 def get_db_connection():
-    connection = sqlite3.connect(DB_PATH, timeout=15)
+    connection = sqlite3.connect(DB_PATH, timeout=30)
+    connection.execute("PRAGMA busy_timeout = 30000")
     connection.row_factory = sqlite3.Row
     return connection
 
@@ -50,6 +51,7 @@ def init_database():
     db_file = Path(DB_PATH)
     db_file.parent.mkdir(parents=True, exist_ok=True)
     with get_db_connection() as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
         connection.execute(
             """CREATE TABLE IF NOT EXISTS users (
                 email TEXT PRIMARY KEY,
