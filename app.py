@@ -10,10 +10,9 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(16))
 ADMIN_EMAIL = "alabod213@gmail.com"
 SECURITY_CODE = "96694489"
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
-# الأصول والسلع القيادية الحقيقية المعتمدة للتداول لعام 2026
+
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'BNB/USDT']
 
-# الربط القياسي الصارم بعقود USDT-Margined المباشرة لبايننس ومنع الرفض الصامت
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
     'secret': os.environ.get('BINANCE_API_SECRET'), 
@@ -67,9 +66,8 @@ def get_light_market_widget():
         html += '<p style="color:#aaa; font-size:12px; margin:0;">Updating rates from Binance Futures Secure Grid...</p>'
     html += '</div></div>'
     return html
-
 def get_google_translator_script():
-    # كود جافا سكريبت النظيف والمصحح لاستدعاء مترجم جوجل بجميع لغات العالم ولهجاتها دون حظر المتصفح
+    # كود جافا سكريبت النظيف لاستدعاء مترجم جوجل الفوري لجميع لغات العالم ولهجاتها
     return '''
     <div id="google_translate_element" style="text-align:center; padding:10px; background:#141414; border-bottom:1px solid #333; min-height:40px;"></div>
     <script type="text/javascript">
@@ -79,6 +77,7 @@ def get_google_translator_script():
     </script>
     <script type="text/javascript" src="//://google.com"></script>
     '''
+
 @app.route('/')
 def index():
     return redirect(url_for('login'))
@@ -106,7 +105,9 @@ def login():
             session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
             return redirect(url_for('user_dashboard'))
         return '<script>alert("البيانات غير صحيحة!"); window.history.back();</script>'
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; margin:0; padding:0;">{get_google_translator_script()}<div style="background:#141414; max-width:400px; margin:60px auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p>{get_light_market_widget()}</div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; margin:0; padding:0;">{get_google_translator_script()}<div style="background:#141414; max-width:400px; margin:60px auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST">'
+<input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p>{get_light_market_widget()}</div></body></html>'
+
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
@@ -117,7 +118,8 @@ def forgot_password():
             user_pass = users_db[email]['password']
             return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;">{get_google_translator_script()}<div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
         return '<script>alert("هذا البريد غير مسجل!"); window.history.back();</script>'
-    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;">{get_google_translator_script()}<div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;">{get_google_translator_script()}<div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2>'
+<form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -139,7 +141,9 @@ def register():
         }
         session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
         return redirect(url_for('user_dashboard'))
-    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:400px; margin:40px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
+    return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:400px; margin:40px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST">'
+<input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
+
 @app.route('/payment', methods=['GET', 'POST'])
 def payment_page():
     if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
@@ -192,6 +196,7 @@ def admin_panel():
                 btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_withdrawal"><button type="submit" style="background:#ff3333; color:white; padding:5px 10px; font-weight:bold; border:none; border-radius:4px; cursor:pointer;">✓ موافقة سحب الأموال</button></form>'
         rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v.get('username', 'مستثمر')}</td><td>{k}</td><td>${v.get('amount', 0.0):.2f}</td><td style='color:#00ff00; font-weight:bold;'>${v.get('user_profits', 0.0):.2f}</td><td style='color:#00e5ff;'>{v.get('current_asset', 'لا يوجد صفقات')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
     return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:1100px; margin:30px auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>👑 لوحة الإشراف العليا والاستثمار السيادي للمشرف عبد الله</h2><p>رصيدك العام المباشر في بايننس: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>أرباح رسوم رين الموثقة: <b style="color:#ffcc00;">${total_subscription_earnings:.2f} USD</b></p><p>صندوق تتبع سحوبات أرباح بايننس لـ Rain: <b style="color:#00e5ff;">${cumulative_bot_profits:.2f} / $100.00</b></p><hr style="border-color:#333;"><h3>👥 كشف وتحكم شامل بالمحفظة، المستثمرين... وأرباحك المباشرة:</h3><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>الاسم الكلي</th><th>البريد الإلكتروني</th><th>رأس المال الحالي</th><th>الأرباح المحققة 📈</th><th>الأصل المستثمر به حالياً</th><th>الحالة العامة والترخيص</th><th>الإجراء المالي الفوري</th></thead><tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">↩️ تسجيل خروج آمن</a></div></body></html>'
+
 @app.route('/user-dashboard', methods=['GET', 'POST'])
 def user_dashboard():
     if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
@@ -253,8 +258,7 @@ def auto_trading_engine():
                         cumulative_bot_profits += simulated_profit
                         direction_label = f"Buy/Long {chosen_leverage}x" if order_side == 'buy' else f"Sell/Short {chosen_leverage}x"
                         display_asset = f"Gold (PAXG) {direction_label} 📈" if "PAXG" in asset else (f"Oil/Energy (BNB) {direction_label} 📈" if "BNB" in asset else f"{asset.replace('/USDT','')} {direction_label} 📈")
-                        if ADMIN_EMAIL not in users_db:
-                            users_db[ADMIN_EMAIL] = {'username': 'المشرف العام عبد الله 👑', 'amount': current_free, 'user_profits': cumulative_bot_profits, 'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'current_asset': display_asset}
+                        if ADMIN_EMAIL not in users_db: users_db[ADMIN_EMAIL] = {'username': 'المشرف العام عبد الله 👑', 'amount': current_free, 'user_profits': cumulative_bot_profits, 'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'current_asset': display_asset}
                         else:
                             users_db[ADMIN_EMAIL]['current_asset'] = display_asset
                             users_db[ADMIN_EMAIL]['user_profits'] = cumulative_bot_profits
