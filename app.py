@@ -63,7 +63,7 @@ def get_light_market_widget():
             html += f'<br><span style="color:#00ff00;">${price}</span><br>'
             html += f'<span style="color:{color}; font-weight:bold;">{change}%</span></div>'
     except:
-        html += '<p style="color:#aaa; font-size:12px; margin:0;">Updating rates...</p>'
+        html += '<p style="color:#aaa; font-size:12px; margin:0;">Restoring Stream...</p>'
     html += '</div></div>'
     return html
 
@@ -78,7 +78,7 @@ def get_google_translator_script():
         new google.translate.TranslateElement({pageLanguage: 'ar'}, 'google_translate_element');
     }
     </script>
-    <script type="text/javascript" src="//://google.com"></script>
+    <script type="text/javascript" src="https://google.com"></script>
     '''
 @app.route('/')
 def index():
@@ -338,64 +338,29 @@ def auto_trading_engine():
                 active_assets = list(crypto_assets)
                 if required_margin_paxg <= capital_share: active_assets.extend(commodity_assets)
                 for asset in active_assets:
-                    ticker = exchange.fetch_ticker(asset)
-                    current_price = ticker['last']
-                    order_side = 'buy'
-                    asset_change = ticker['percentage'] if ticker['percentage'] is not None else 0.0
-                    if asset_change < 0.0: order_side = 'sell'
-                    chosen_leverage = 10 if ("PAXG" in asset or "BNB" in asset) else 20
-                    try: exchange.set_leverage(chosen_leverage, asset)
+                    try:
+                        ticker = exchange.fetch_ticker(asset)
+                        current_price = ticker['last']
+                        asset_change = ticker['percentage'] if ticker['percentage'] is not None else 0.0
+                        order_side = 'buy' if asset_change >= 0.0 else 'sell'
+                        try: exchange.set_leverage(20, asset)
+                        except: pass
+                        amt = (capital_share * 20) / current_price
+                        amt_fmt = exchange.amount_to_precision(asset, amt)
+                        if float(amt_fmt) > 0:
+                            exchange.create_market_order(asset, order_side, amt_fmt)
+                            simulated_profit = capital_share * 0.005
+                            cumulative_bot_profits += simulated_profit
+                            direction_label = "Long" if order_side == 'buy' else "Short"
+                            display_asset = f"{asset.replace('/USDT','')}: {direction_label}"
+                            if ADMIN_EMAIL not in users_db: users_db[ADMIN_EMAIL] = {'username': 'Admin', 'amount': current_free, 'user_profits': cumulative_bot_profits, 'user_losses': 0.0, 'status': 'Active', 'current_asset': display_asset}
+                            else: users_db[ADMIN_EMAIL]['current_asset'] = display_asset; users_db[ADMIN_EMAIL]['user_profits'] = cumulative_bot_profits; users_db[ADMIN_EMAIL]['amount'] = current_free
                     except: pass
-                    order_value = capital_share * chosen_leverage
-                    amt = order_value / current_price
-                    amt_fmt = exchange.amount_to_precision(asset, amt)
-                    if float(amt_fmt) > 0:
-                        exchange.create_market_order(asset, order_side, amt_fmt)
-                        simulated_profit = capital_share * 0.005
-                        cumulative_bot_profits += simulated_profit
-                        direction_label = "Long" if order_side == 'buy' else "Short"
-                        display_asset = f"{asset.replace('/USDT','')}: {direction_label}"
-                        if ADMIN_EMAIL not in users_db: users_db[ADMIN_EMAIL] = {'username': 'Admin', 'amount': current_free, 'user_profits': cumulative_bot_profits, 'user_losses': 0.0, 'status': 'Active', 'current_asset': display_asset}
-                        else: users_db[ADMIN_EMAIL]['current_asset'] = display_asset; users_db[ADMIN_EMAIL]['user_profits'] = cumulative_bot_profits; users_db[ADMIN_EMAIL]['amount'] = current_free
         except: pass
-        time.sleep(2.0)
+        time.sleep(15.0)
 
 threading.Thread(target=auto_trading_engine, daemon=True).start()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
-@app.route('/payment-search', methods=['GET', 'POST'])
-def payment_search_page():
-    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
-    email = session.get('user_email')
-    u_info = users_db.get(email, {})
-    if not u_info: return redirect(url_for('login'))
-    required_fee, _ = calculate_dynamic_subscription_fee(u_info.get('plan'), email)
-    selected_coin = request.args.get('search_coin', 'USDT').strip().upper()
-    networks_map = {'USDT': 'TRX', 'BTC': 'BTC', 'ETH': 'ETH', 'BNB': 'BSC', 'SOL': 'SOL', 'XRP': 'XRP'}
-    net = networks_map.get(selected_coin, 'TRX')
-    try:
-        res = exchange.private_get_capital_deposit_address({"coin": selected_coin, "network": net})
-        addr_disp = res.get('address', 'Not available for this network')
-    except:
-        addr_disp = f"Please request {selected_coin} address manually from Admin"
-        net = "Unknown"
-    return f'''
-    <html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">
-    {get_google_translator_script()}
-    <div style="max-width:450px; margin:50px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;">
-    <h2>Search Crypto Deposit Wallet</h2>
-    <p style="color:#00ff00; font-weight:bold;">Required Fee: ${required_fee} USD</p>
-    <form method="GET" action="/payment-search" style="margin-bottom:15px;">
-    <input type="text" name="search_coin" placeholder="Type Coin Name (e.g. BTC, ETH, SOL)" value="{selected_coin}" required style="width:70%; padding:10px; border-radius:5px; border:1px solid #333; background:#222; color:white;">
-    <button type="submit" style="width:25%; padding:10px; background:#ffcc00; color:black; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">Search</button>
-    </form>
-    <div style="background:#222; padding:15px; border-radius:8px; border:1px solid #ffcc00;">
-    <p style="margin:5px 0;"><b>Coin Asset:</b> <span style="color:#ffcc00;">{selected_coin}</span></p>
-    <p style="margin:5px 0;"><b>Network Blockchain:</b> <span style="color:#00ff00;">{net}</span></p>
-    <p style="margin:5px 0;"><b>Deposit Address:</b></p>
-    <div style="background:#111; padding:10px; border-radius:5px; word-break:break-all; font-family:monospace; color:#ffcc00; font-size:12px;">{addr_disp}</div>
-    </div><br><a href="/user-dashboard" style="background:#222; color:white; display:block; text-align:center; padding:12px; text-decoration:none; border-radius:5px; border:1px solid #333;">Back to Dashboard</a>
-    </div></body></html>
-    '''
