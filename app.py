@@ -230,3 +230,37 @@ if __name__ == '__main__':
 #
 #
 #
+@app.route('/admin-panel', methods=['GET', 'POST'])
+def admin_panel():
+    if not session.get('logged_in') or session.get('role') != 'admin': return redirect(url_for('login'))
+    u = users_db.get(ADMIN_EMAIL, {})
+    live_balance = u.get('amount', 362.41)
+    if request.method == 'POST':
+        action = request.form.get('action')
+        target_email = request.form.get('user_email')
+        if target_email in users_db:
+            if action == 'approve_fees':
+                users_db[target_email]['is_approved'] = True
+                users_db[target_email]['status'] = 'Fees Confirmed'
+            elif action == 'approve_investment':
+                users_db[target_email]['status'] = 'Active'
+                users_db[target_email]['completed_payments_count'] += 1
+            elif action == 'approve_deposit':
+                dep_amt = float(request.form.get('deposit_amount', 0))
+                users_db[target_email]['amount'] += dep_amt
+                users_db[target_email]['status'] = 'Active'
+            elif action == 'approve_withdrawal':
+                users_db[target_email]['amount'] -= users_db[target_email]['pending_withdrawal']
+                users_db[target_email]['pending_withdrawal'] = 0.0
+                users_db[target_email]['status'] = 'Expired'
+        return redirect(url_for('admin_panel'))
+    rows = ""
+    for k, v in users_db.items():
+        btn_html = ""
+        if k == ADMIN_EMAIL: status_display = "Admin Account"
+        else:
+            status_display = v['status']
+            if 'Pending Review' in v['status']: btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_fees"><button type="submit">Confirm Fees</button></form>'
+            elif 'Fees Confirmed' in v['status']: btn_html = f'<form method="POST" style="display:inline;"><input type="hidden" name="user_email" value="{k}"><input type="hidden" name="action" value="approve_investment"><button type="submit">Confirm Deposit</button></form>'
+        rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v.get('username')}</td><td>{k}</td><td>${v.get('amount', 0.0):.2f}</td><td style='color:#00ff00;'>${v.get('user_profits', 0.0):.2f}</td><td>{v.get('current_asset')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
+    return f'''<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:1100px; margin:30px auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>Admin Panel - Abdullah</h2><p>Live Binance Balance: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>Total Earnings: <b>${total_subscription_earnings:.2f} USD</b></p><p>Bot Profits: <b>${cumulative_bot_profits:.2f} / $100.00</b></p><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>Name</th><th>Email</th><th>Capital</th><th>Profits</th><th>Asset</th><th>Status</th><th>Action</th></thead><tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">Logout</a></div></body></html>'''
