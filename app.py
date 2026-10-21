@@ -27,7 +27,7 @@ exchange = ccxt.binance({
 users_db = {}
 total_subscription_earnings = 0.0
 cumulative_bot_profits = 0.0
-
+#
 def calculate_dynamic_subscription_fee(plan, email):
     kuwait_tz = pytz.timezone('Asia/Kuwait')
     now = datetime.now(kuwait_tz)
@@ -35,24 +35,22 @@ def calculate_dynamic_subscription_fee(plan, email):
     final_price = base_prices.get(plan, 49.99)
     user_record = users_db.get(email, {})
     past_payments = user_record.get('completed_payments_count', 0)
-
-    if plan == 'weekly' and past_payments > 0 and (past_payments % 3 == 0):
+    check_loyalty = (past_payments > 0 and past_payments % 3 == 0)
+    if plan == 'weekly' and check_loyalty:
         return 0.0, "Discount Active"
-    if plan == 'monthly' and past_payments > 0 and (past_payments % 3 == 0):
+    if plan == 'monthly' and check_loyalty:
         return 0.0, "Discount Active"
-
     HOLIDAYS_2026 = [(1, 1), (2, 25), (2, 26), (3, 20), (5, 27), (6, 16)]
     is_holiday = (now.month, now.day) in HOLIDAYS_2026
     is_weekend = now.weekday() in (4, 5)
-
     if is_holiday:
         return round(max(0.0, final_price - 10.0), 2), "Holiday Offer Active"
     if is_weekend:
         if plan == 'weekly': return round(max(0.0, final_price - 2.0), 2), "Weekend Offer Active"
         if plan == 'monthly': return round(max(0.0, final_price - 5.0), 2), "Weekend Offer Active"
         if plan == 'yearly': return round(max(0.0, final_price - 10.0), 2), "Weekend Offer Active"
-    
     return round(final_price, 2), "Standard Price Plan"
+
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">Market Radar Summary</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
@@ -67,6 +65,7 @@ def get_light_market_widget():
         html += '<p style="color:#aaa; font-size:12px; margin:0;">Updating rates...</p>'
     html += '</div></div>'
     return html
+
 def get_google_translator_script():
     return '''
     <div id="google_translate_element" style="text-align:center; padding:10px; background:#141414; border-bottom:1px solid #333; min-height:40px;"></div>
@@ -88,7 +87,8 @@ def login():
         email = request.form.get('email').strip().lower()
         code = request.form.get('code')
         if email == ADMIN_EMAIL and code == SECURITY_CODE:
-            session['logged_in'] = True; session['role'] = 'admin'
+            session['logged_in'] = True
+            session['role'] = 'admin'
             live_balance = 362.41
             try:
                 balance = exchange.fetch_balance()
@@ -124,16 +124,14 @@ def login():
     <br>
     <input type="password" name="code" placeholder="Password" required style="width:100%; padding:10px; margin-bottom:20px;">
     <br>
-    <button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">Enter</button>
+    <button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">Enter</button>
     </form>
     <p style="text-align:center; font-size:13px; margin-top:15px;">
     <a href="/register" style="color:#ffcc00; text-decoration:none;">Register</a> | 
     <a href="/forgot-password" style="color:#aaa; text-decoration:none;">Forgot Password</a>
     </p>
     {get_light_market_widget()}
-    </div>
-    </body>
-    </html>
+    </div></body></html>
     '''
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
@@ -356,8 +354,7 @@ def auto_trading_engine():
                 ticker_paxg = exchange.fetch_ticker('PAXG/USDT')
                 required_margin_paxg = (0.01 * ticker_paxg['last']) / 20.0
                 active_assets = list(crypto_assets)
-                if required_margin_paxg <= capital_share:
-                    active_assets.extend(commodity_assets)
+                if required_margin_paxg <= capital_share: active_assets.extend(commodity_assets)
                 for asset in active_assets:
                     ticker = exchange.fetch_ticker(asset)
                     current_price = ticker['last']
@@ -384,3 +381,5 @@ def auto_trading_engine():
 threading.Thread(target=auto_trading_engine, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000)); app.run(host='0.0.0.0', port=port)
+
+
