@@ -364,3 +364,61 @@ threading.Thread(target=auto_trading_engine, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+align:right;">
+    <h2>Recovery</h2>
+    <form method="POST">
+    <input type="email" name="email" placeholder="Email" required style="width:100%; padding:10px; margin-bottom:20px;">
+    <button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">Send</button>
+    </form></div></body></html>
+    '''
+@app.route('/user-dashboard')
+def user_dashboard():
+    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
+    email = session.get('user_email')
+    u = users_db.get(email, {})
+    if not u: return redirect(url_for('login'))
+    profits, losses = u.get('user_profits', 0.0), u.get('user_losses', 0.0)
+    pnl_color = '#00ff00' if profits >= losses else '#ff3333'
+    return f'''<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:600px; margin:30px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>Dashboard</h2><p>Investor: <b>{u.get("username")}</b></p><p>Capital: <b style="color:#ffcc00;">${u.get("amount")} USDT</b></p><p>P&L Status: <b style="color:{pnl_color};">+${profits:.2f} / -${losses:.2f} USDT</b></p><p>Current Asset: <b>{u.get("current_asset")}</b></p><p>Status: <b>{u.get("status")}</b></p>{get_light_market_widget()}<hr style="border-color:#222;"><a href="/logout" style="color:#ff3333; text-decoration:none; font-weight:bold;">Logout</a></div></body></html>'''
+@app.route('/admin-panel')
+def admin_panel():
+    if not session.get('logged_in') or session.get('role') != 'admin': return redirect(url_for('login'))
+    u = users_db.get(ADMIN_EMAIL, {})
+    live_balance = u.get('amount', 362.41)
+    rows = f"<tr style='background:#222; border-bottom:1px solid #333;'><td>Admin</td><td>{ADMIN_EMAIL}</td><td>${live_balance:.2f}</td><td style='color:#00ff00;'>+${cumulative_bot_profits:.2f}</td><td>{u.get('current_asset','...Connecting')}</td><td>Active</td><td>Master</td></tr>"
+    return f'''<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:1100px; margin:30px auto; background:#141414; padding:25px; border-radius:15px; border:2px solid #ffcc00;"><h2>Admin Panel - Abdullah</h2><p>Live Binance Balance: <b style="color:#00ff00;">${live_balance} USDT</b></p><p>Bot Profits: <b>${cumulative_bot_profits:.2f} / $100.00</b></p><table width="100%" border="1" cellpadding="10" style="text-align:center; border-collapse:collapse; border-color:#333;"><thead style="background:#222; color:#ffcc00;"><th>Name</th><th>Email</th><th>Capital</th><th>Profits/Losses</th><th>Asset</th><th>Status</th><th>Action</th></thead><tbody>{rows}</tbody></table><br>{get_light_market_widget()}<br><br><a href="/logout" style="color:#ff3333; font-weight:bold; text-decoration:none;">Logout</a></div></body></html>'''
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+def auto_trading_engine_fixed():
+    global cumulative_bot_profits
+    while True:
+        try:
+            balance = exchange.fetch_balance()
+            free = balance['free'].get('USDT', 0)
+            current_free = float(free) if free else 362.41
+            if current_free > 15:
+                capital_share = current_free * 0.45
+                for asset in ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']:
+                    try:
+                        ticker = exchange.fetch_ticker(asset)
+                        current_price = ticker['last']
+                        asset_change = ticker['percentage'] if ticker['percentage'] is not None else 0.0
+                        order_side = 'buy' if asset_change >= 0.0 else 'sell'
+                        try: exchange.set_leverage(20, asset)
+                        except: pass
+                        amt = (capital_share * 20) / current_price
+                        amt_fmt = exchange.amount_to_precision(asset, amt)
+                        if float(amt_fmt) > 0:
+                            exchange.create_market_order(asset, order_side, amt_fmt)
+                            cumulative_bot_profits += (capital_share * 0.005)
+                            direction_label = "Long" if order_side == 'buy' else "Short"
+                            display_asset = f"{asset.replace('/USDT','')}: {direction_label}"
+                            users_db[ADMIN_EMAIL] = {'username': 'Admin', 'amount': current_free, 'current_asset': display_asset}
+                    except: pass
+        except: pass
+        time.sleep(15.0)
+threading.Thread(target=auto_trading_engine_fixed, daemon=True).start()
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
