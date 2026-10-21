@@ -11,16 +11,16 @@ ADMIN_EMAIL = "alabod213@gmail.com"
 SECURITY_CODE = "96694489"
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
 
-# مصفوفة رادار الأصول والسلع لعام 2026
+# مصفوفة رادار أصول بايننس القيادية لعام 2026
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'BNB/USDT']
 
-# الربط القياسي الصارم بعقود USDT-Margined الفعلية لبايننس لمنع الرفض
+# الربط القياسي الصارم لبايننس فيوتشرز وضبط المزامنة لمنع الرفض الصامت
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
     'secret': os.environ.get('BINANCE_API_SECRET'), 
     'enableRateLimit': True, 
     'options': {
-        'defaultType': 'future', # توجيه تلقائي لمحرك الفيوتشرز الفعلي
+        'defaultType': 'future',
         'adjustForTimeSync': True,
         'recvWindow': 60000
     }
@@ -54,7 +54,7 @@ def calculate_dynamic_subscription_fee(plan, email):
         if plan == 'monthly': return round(max(0.0, final_price - 5.0), 2), "⚡ عروض الويكند الحية: خصم $5 على الشهري!"
         if plan == 'yearly': return round(max(0.0, final_price - 10.0), 2), "⚡ عروض الويكند الحية: خصم $10 على السنوي!"
     
-    return round(final_price, 2), "Standard Price Plan"
+    return round(final_price, 2), "💎 السعر القياسي الفوري للباقة."
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">Market Radar Summary</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
@@ -109,7 +109,7 @@ def forgot_password():
             user_pass = users_db[email]['password']
             return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
         return '<script>alert("هذا البريد غير مسجل!"); window.history.back();</script>'
-    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
+    return '<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;"><div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:1px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
