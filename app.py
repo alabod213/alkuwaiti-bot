@@ -2,6 +2,7 @@ import os, time, threading, secrets
 from datetime import datetime
 import pytz
 from flask import Flask, request, redirect, url_for, session
+from markupsafe import escape
 import ccxt
 
 app = Flask(__name__)
@@ -78,21 +79,16 @@ def get_google_translator_script():
         new google.translate.TranslateElement({pageLanguage: 'ar'}, 'google_translate_element');
     }
     </script>
-    <script type="text/javascript" src="https://google.com"></script>
+    <script type="text/javascript" src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit"></script>
     '''@app.route('/')
 def index():
     return redirect(url_for('login'))
 
-@app.route('/magic-login')
-def magic_login():
-    session['logged_in'] = True
-    session['role'] = 'admin'
-    return redirect(url_for('admin_panel'))
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form.get('email').strip().lower()
+        email = (request.form.get('email') or '').strip().lower()
         code = request.form.get('code')
         if email == ADMIN_EMAIL and code == SECURITY_CODE:
             session['logged_in'] = True
@@ -137,8 +133,9 @@ def login():
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
-        email = request.form.get('email').strip().lower()
-        if email == ADMIN_EMAIL: return f'<script>alert("Code: {SECURITY_CODE}"); window.location.href="/login";</script>'
+        email = (request.form.get('email') or '').strip().lower()
+        if email == ADMIN_EMAIL:
+            return '<script>alert("If the account exists, recovery instructions will be provided securely."); window.location.href="/login";</script>'
         if email in users_db:
             user_pass = users_db[email]['password']
             return f'''
@@ -168,11 +165,18 @@ def forgot_password():
 def register():
     if request.method == 'POST':
         username = request.form.get('username')
-        email = request.form.get('email').strip().lower()
+        email = (request.form.get('email') or '').strip().lower()
         password = request.form.get('password')
         plan = request.form.get('plan')
-        amount = float(request.form.get('amount', 0))
-        if amount < 50.0: return '<script>alert("Minimum 50 USD"); window.location.href="/register";</script>'
+        if not username or not email or not password or plan not in {'weekly', 'monthly', 'yearly'}:
+            return '<script>alert("Please enter valid registration details"); window.location.href="/register";</script>'
+        if len(password) < 8:
+            return '<script>alert("Password must be at least 8 characters"); window.location.href="/register";</script>'
+        try:
+            amount = float(request.form.get('amount', 0))
+        except (TypeError, ValueError):
+            return '<script>alert("Invalid amount"); window.location.href="/register";</script>'
+        if not amount >= 50.0: return '<script>alert("Minimum 50 USD"); window.location.href="/register";</script>'
         if email in users_db or email == ADMIN_EMAIL: return '<script>alert("Exists"); window.location.href="/register";</script>'
         users_db[email] = {
             'username': username, 'password': password, 'plan': plan, 'amount': amount, 
@@ -211,8 +215,7 @@ def payment_page():
     if u_info.get('status') == 'Active': return redirect(url_for('user_dashboard'))
     required_fee, discount_note = calculate_dynamic_subscription_fee(u_info.get('plan'), email)
     if request.method == 'POST':
-        global total_subscription_earnings
-        total_subscription_earnings += float(required_fee)
+        # Clicking the button only submits a payment claim for manual review.
         u_info['status'] = 'Pending Review'
         return '<script>alert("Sent"); window.location.href="/user-dashboard";</script>'
     return f'''
@@ -244,9 +247,13 @@ def admin_panel():
                 users_db[target_email]['status'] = 'Active'
                 users_db[target_email]['completed_payments_count'] += 1
             elif action == 'approve_deposit':
-                dep_amt = float(request.form.get('deposit_amount', 0))
-                users_db[target_email]['amount'] += dep_amt
-                users_db[target_email]['status'] = 'Active'
+                try:
+                    dep_amt = float(request.form.get('deposit_amount', 0))
+                except (TypeError, ValueError):
+                    dep_amt = 0.0
+                if dep_amt > 0:
+                    users_db[target_email]['amount'] += dep_amt
+                    users_db[target_email]['status'] = 'Active'
             elif action == 'approve_withdrawal':
                 users_db[target_email]['amount'] -= users_db[target_email]['pending_withdrawal']
                 users_db[target_email]['pending_withdrawal'] = 0.0
@@ -263,7 +270,7 @@ def admin_panel():
         profits = v.get('user_profits', 0.0)
         losses = v.get('user_losses', 0.0)
         pnl_color = '#00ff00' if profits >= losses else '#ff3333'
-        rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{v.get('username')}</td><td>{k}</td><td>${v.get('amount', 0.0):.2f}</td><td style='color:{pnl_color};'>+${profits:.2f} / -${losses:.2f}</td><td>{v.get('current_asset')}</td><td>{status_display}</td><td>{btn_html}</td></tr>"
+        rows += f"<tr style='background:#222; border-bottom:1px solid #333;'><td>{escape(v.get('username', ''))}</td><td>{escape(k)}</td><td>${float(v.get('amount', 0.0)):.2f}</td><td style='color:{pnl_color};'>+${float(profits):.2f} / -${float(losses):.2f}</td><td>{escape(v.get('current_asset', ''))}</td><td>{escape(status_display)}</td><td>{btn_html}</td></tr>"
     return f'''
     <html lang="ar" dir="rtl">
     <body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">
@@ -325,11 +332,7 @@ def auto_trading_engine():
             balance = exchange.fetch_balance()
             free = balance['free'].get('USDT', 0)
             current_free = float(free) if free else 362.41
-            if cumulative_bot_profits >= 100.0:
-                try:
-                    exchange.withdraw(code='USDT', amount=100.0, address=RAIN_BITCOIN_ADDRESS, tag=None, params={"network": "TRX"})
-                    cumulative_bot_profits -= 100.0
-                except: pass
+            # Withdrawals are intentionally manual; review and authorize them separately.
             if current_free > 15:
                 capital_share = current_free * 0.45
                 ticker_paxg = exchange.fetch_ticker('PAXG/USDT')
@@ -358,7 +361,8 @@ def auto_trading_engine():
         except: pass
         time.sleep(15.0)
 
-threading.Thread(target=auto_trading_engine, daemon=True).start()
+if os.environ.get('AUTO_TRADING_ENABLED', 'false').lower() == 'true':
+    threading.Thread(target=auto_trading_engine, daemon=True).start()
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
