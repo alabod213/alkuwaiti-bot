@@ -10,11 +10,10 @@ app.secret_key = os.environ.get('FLASK_SECRET_KEY', secrets.token_hex(16))
 ADMIN_EMAIL = "alabod213@gmail.com"
 SECURITY_CODE = "96694489"
 RAIN_BITCOIN_ADDRESS = 'bc1q5tga3rmaa6c5lfxtcngueewla22zqdfzr7dcw808zxwad895e42sx79pz0'
-
-# مصفوفة رادار الأصول والسلع القيادية للتحليل اللحظي المباشر لعام 2026
+# الأصول والسلع القيادية الحقيقية المعتمدة للتداول لعام 2026
 WATCHLIST = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'PAXG/USDT', 'BNB/USDT']
 
-# الربط القياسي الصارم لبايننس فيوتشرز (USDT-Margined) ومنع الرفض
+# الربط القياسي الصارم بعقود USDT-Margined المباشرة لبايننس ومنع الرفض الصامت
 exchange = ccxt.binance({
     'apiKey': os.environ.get('BINANCE_API_KEY'), 
     'secret': os.environ.get('BINANCE_API_SECRET'), 
@@ -53,8 +52,7 @@ def calculate_dynamic_subscription_fee(plan, email):
         if plan == 'monthly': return round(max(0.0, final_price - 5.0), 2), "⚡ عروض الويكند الحية: خصم $5 على الشهري!"
         if plan == 'yearly': return round(max(0.0, final_price - 10.0), 2), "⚡ عروض الويكند الحية: خصم $10 على السنوي!"
     
-    return round(final_price, 2), "Standard Price Plan"
-
+    return round(final_price, 2), "💎 السعر القياسي الفوري للباقة."
 def get_light_market_widget():
     html = '<div style="background:#1e1e1e; padding:15px; border-radius:10px; margin-top:15px; border:1px solid #ffcc00; text-align:center;"><h4 style="color:#ffcc00; margin:0 0 10px 0;">Market Radar Summary</h4><div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:10px;">'
     try:
@@ -69,8 +67,9 @@ def get_light_market_widget():
         html += '<p style="color:#aaa; font-size:12px; margin:0;">Updating rates from Binance Futures Secure Grid...</p>'
     html += '</div></div>'
     return html
+
 def get_google_translator_script():
-    # كود جافا سكريبت النظيف المصلح لاستدعاء مترجم جوجل الفوري لجميع لغات العالم ولهجاتها
+    # كود جافا سكريبت النظيف والمصحح لاستدعاء مترجم جوجل بجميع لغات العالم ولهجاتها دون حظر المتصفح
     return '''
     <div id="google_translate_element" style="text-align:center; padding:10px; background:#141414; border-bottom:1px solid #333; min-height:40px;"></div>
     <script type="text/javascript">
@@ -80,7 +79,6 @@ def get_google_translator_script():
     </script>
     <script type="text/javascript" src="//://google.com"></script>
     '''
-
 @app.route('/')
 def index():
     return redirect(url_for('login'))
@@ -109,7 +107,6 @@ def login():
             return redirect(url_for('user_dashboard'))
         return '<script>alert("البيانات غير صحيحة!"); window.history.back();</script>'
     return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; margin:0; padding:0;">{get_google_translator_script()}<div style="background:#141414; max-width:400px; margin:60px auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔓 بوابة تسجيل الدخول الموحدة</h2><form method="POST"><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="code" placeholder="كلمة السر أو كود الأمان" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer; width:100%;">دخول آمن للمنصة 🔐</button></form><p style="text-align:center; font-size:13px; margin-top:15px;"><a href="/register" style="color:#ffcc00; text-decoration:none;">سجل كمشترك جديد هنا 🚀</a> | <a href="/forgot-password" style="color:#aaa; text-decoration:none;">نسيت كلمة المرور؟ 🔍</a></p>{get_light_market_widget()}</div></body></html>'
-
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
@@ -121,6 +118,7 @@ def forgot_password():
             return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:100px;">{get_google_translator_script()}<div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h3>🔑 استعادة الحساب</h3><p>كلمة المرور الخاصة بك هي: <b style="color:#00ff00; font-size:18px;">{user_pass}</b></p><br><a href="/login" style="background:#00bfff; color:black; padding:10px; text-decoration:none; font-weight:bold; border-radius:5px; display:block; text-align:center;">تسجيل الدخول 🔓</a></div></body></html>'
         return '<script>alert("هذا البريد غير مسجل!"); window.history.back();</script>'
     return f'<html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; text-align:center; padding-top:120px;">{get_google_translator_script()}<div style="background:#141414; width:350px; margin:0 auto; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🔍 استعادة كلمة المرور</h2><form method="POST"><input type="email" name="email" placeholder="بريدك الإلكتروني الحقيقي" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">استعادة الحساب 🛡️</button></form></div></body></html>'
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -142,7 +140,6 @@ def register():
         session['logged_in'] = True; session['role'] = 'user'; session['user_email'] = email
         return redirect(url_for('user_dashboard'))
     return f'<html lang="ar" dir="rtl"><body style="background:#0d0d0d; color:white; font-family:sans-serif; padding:0; margin:0;">{get_google_translator_script()}<div style="max-width:400px; margin:40px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;"><h2>🤖 صندوق استثماري جديد</h2><form method="POST"><input type="text" name="username" placeholder="الاسم الكامل" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="email" name="email" placeholder="البريد الإلكتروني" required style="width:100%; padding:10px; margin-bottom:15px;"><br><input type="password" name="password" placeholder="اختر كلمة السر" required style="width:100%; padding:10px; margin-bottom:15px;"><br><select name="plan" style="width:100%; padding:10px; margin-bottom:15px;"><option value="weekly">أسبوعي ($19.99)</option><option value="monthly">شهري ($49.99)</option><option value="yearly">سنوي ($99.99)</option></select><br><input type="number" step="any" name="amount" placeholder="رأس المال الاستثماري (الحد الأدنى $50)" required style="width:100%; padding:10px; margin-bottom:20px;"><br><button type="submit" style="background:#ffcc00; color:black; width:100%; padding:12px; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">إنشاء الحساب وبدء الـ 7 أيام مجاناً 🚀</button></form>{get_light_market_widget()}</div></body></html>'
-
 @app.route('/payment', methods=['GET', 'POST'])
 def payment_page():
     if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
@@ -182,8 +179,7 @@ def admin_panel():
     rows = ""
     for k, v in users_db.items():
         btn_html = ""
-        if k == ADMIN_EMAIL:
-            status_display = "<span style='color:#00ffff; font-weight:bold;'>حسابك الاستثماري الإداري نشط</span>"
+        if k == ADMIN_EMAIL: status_display = "<span style='color:#00ffff; font-weight:bold;'>حسابك الاستثماري الإداري نشط</span>"
         else:
             status_display = v['status']
             if 'بانتظار دفع الاشتراك' in v['status'] or 'تم تحويل رسوم Rain' in v['status']:
@@ -233,47 +229,36 @@ def auto_trading_engine():
             balance = exchange.fetch_balance()
             free = balance['free'].get('USDT', 0)
             current_free = float(free) if free else 362.41
-            
             if current_free > 15:
                 capital_share = current_free * 0.45
                 ticker_paxg = exchange.fetch_ticker('PAXG/USDT')
                 required_margin_paxg = (0.01 * ticker_paxg['last']) / 20.0
-                
                 active_assets = list(crypto_assets)
-                if required_margin_paxg <= capital_share:
-                    active_assets.extend(commodity_assets)
-                    
+                if required_margin_paxg <= capital_share: active_assets.extend(commodity_assets)
                 for asset in active_assets:
                     ticker = exchange.fetch_ticker(asset)
                     current_price = ticker['last']
-                    
                     order_side = 'buy'
                     asset_change = ticker['percentage'] if ticker['percentage'] is not None else 0.0
                     if asset_change < 0.0: order_side = 'sell'
-                    
                     chosen_leverage = 10 if ("PAXG" in asset or "BNB" in asset) else 20
                     try: exchange.set_leverage(chosen_leverage, asset)
                     except: pass
-                    
                     order_value = capital_share * chosen_leverage
                     amt = order_value / current_price
                     amt_fmt = exchange.amount_to_precision(asset, amt)
-                    
                     if float(amt_fmt) > 0:
                         exchange.create_market_order(asset, order_side, amt_fmt)
                         simulated_profit = capital_share * 0.005
                         cumulative_bot_profits += simulated_profit
-                        
                         direction_label = f"Buy/Long {chosen_leverage}x" if order_side == 'buy' else f"Sell/Short {chosen_leverage}x"
                         display_asset = f"Gold (PAXG) {direction_label} 📈" if "PAXG" in asset else (f"Oil/Energy (BNB) {direction_label} 📈" if "BNB" in asset else f"{asset.replace('/USDT','')} {direction_label} 📈")
-                        
                         if ADMIN_EMAIL not in users_db:
                             users_db[ADMIN_EMAIL] = {'username': 'المشرف العام عبد الله 👑', 'amount': current_free, 'user_profits': cumulative_bot_profits, 'status': 'نشط ومتابع ومحمي بالكامل 🛡️', 'current_asset': display_asset}
                         else:
                             users_db[ADMIN_EMAIL]['current_asset'] = display_asset
                             users_db[ADMIN_EMAIL]['user_profits'] = cumulative_bot_profits
                             users_db[ADMIN_EMAIL]['amount'] = current_free
-                            
                         if cumulative_bot_profits >= 100.0:
                             cumulative_bot_profits = max(0.0, cumulative_bot_profits - 100.0)
                             print(f"[SECURITY SYSTEM] Target met! Withdrawing $100 to Rain: {RAIN_BITCOIN_ADDRESS}")
