@@ -365,3 +365,37 @@ threading.Thread(target=auto_trading_engine, daemon=True).start()
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
+@app.route('/payment-search', methods=['GET', 'POST'])
+def payment_search_page():
+    if not session.get('logged_in') or session.get('role') != 'user': return redirect(url_for('login'))
+    email = session.get('user_email')
+    u_info = users_db.get(email, {})
+    if not u_info: return redirect(url_for('login'))
+    required_fee, _ = calculate_dynamic_subscription_fee(u_info.get('plan'), email)
+    selected_coin = request.args.get('search_coin', 'USDT').strip().upper()
+    networks_map = {'USDT': 'TRX', 'BTC': 'BTC', 'ETH': 'ETH', 'BNB': 'BSC', 'SOL': 'SOL', 'XRP': 'XRP'}
+    net = networks_map.get(selected_coin, 'TRX')
+    try:
+        res = exchange.private_get_capital_deposit_address({"coin": selected_coin, "network": net})
+        addr_disp = res.get('address', 'Not available for this network')
+    except:
+        addr_disp = f"Please request {selected_coin} address manually from Admin"
+        net = "Unknown"
+    return f'''
+    <html lang="ar" dir="rtl"><body style="background:#0c0c0c; color:white; font-family:sans-serif; padding:0; margin:0;">
+    {get_google_translator_script()}
+    <div style="max-width:450px; margin:50px auto; background:#141414; padding:30px; border-radius:15px; border:2px solid #ffcc00; text-align:right;">
+    <h2>Search Crypto Deposit Wallet</h2>
+    <p style="color:#00ff00; font-weight:bold;">Required Fee: ${required_fee} USD</p>
+    <form method="GET" action="/payment-search" style="margin-bottom:15px;">
+    <input type="text" name="search_coin" placeholder="Type Coin Name (e.g. BTC, ETH, SOL)" value="{selected_coin}" required style="width:70%; padding:10px; border-radius:5px; border:1px solid #333; background:#222; color:white;">
+    <button type="submit" style="width:25%; padding:10px; background:#ffcc00; color:black; font-weight:bold; border:none; border-radius:5px; cursor:pointer;">Search</button>
+    </form>
+    <div style="background:#222; padding:15px; border-radius:8px; border:1px solid #ffcc00;">
+    <p style="margin:5px 0;"><b>Coin Asset:</b> <span style="color:#ffcc00;">{selected_coin}</span></p>
+    <p style="margin:5px 0;"><b>Network Blockchain:</b> <span style="color:#00ff00;">{net}</span></p>
+    <p style="margin:5px 0;"><b>Deposit Address:</b></p>
+    <div style="background:#111; padding:10px; border-radius:5px; word-break:break-all; font-family:monospace; color:#ffcc00; font-size:12px;">{addr_disp}</div>
+    </div><br><a href="/user-dashboard" style="background:#222; color:white; display:block; text-align:center; padding:12px; text-decoration:none; border-radius:5px; border:1px solid #333;">Back to Dashboard</a>
+    </div></body></html>
+    '''
