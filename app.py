@@ -631,7 +631,6 @@ def login():
 @app.route('/logout')
 def logout(): session.clear(); return redirect(url_for('login'))
 
-# مسارات واجهة المستثمرين المضافة لحل خطأ url_for Build Error
 @app.route('/investors')
 def investors():
     return "صفحة المستثمرين"
