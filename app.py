@@ -30,6 +30,8 @@ def credentials():
 
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
 LIVE=os.environ.get('LIVE_TRADING_ENABLED','false').lower()=='true'
+TARGET_NET_ROI=D('0.05')
+ESTIMATED_ROUND_TRIP_COST=D('0.002')  # conservative fee/slippage buffer; funding unknown
 D=Decimal
 logging.basicConfig(level=logging.INFO)
 
@@ -89,7 +91,9 @@ def proposal(symbol):
     if atr<=0: return None
     entry=D(str(closes[-1])); distance=D(str(atr))*D('1.5')
     stop=entry-distance if direction=='LONG' else entry+distance
-    take=entry+distance*2 if direction=='LONG' else entry-distance*2
+    # Technical target based on ATR; reject rather than invent a 5% target.
+    target_distance=distance*2
+    take=entry+target_distance if direction=='LONG' else entry-target_distance
     if stop<=0 or take<=0: return None
     return direction,entry,stop,take
 
@@ -108,27 +112,50 @@ def positions():
 
 def wallet(): return D(signed('GET','/fapi/v2/account')['totalWalletBalance'])
 
+def feasibility(symbol, entry, stop, take, info=None):
+    """Check market min size, free funds and aggregate 10% notional exposure."""
+    info=info or symbol_info(symbol)
+    account=signed('GET','/fapi/v2/account')
+    equity=D(account['totalMarginBalance'])
+    free=D(account['availableBalance'])
+    if equity<=0 or free<=0: raise ValueError('لا يوجد رصيد متاح')
+    ps=positions()
+    if any(x['symbol']==symbol for x in ps): raise ValueError('مركز مفتوح على نفس الرمز')
+    exposure=sum(abs(D(x['positionAmt']))*D(x['markPrice']) for x in ps)
+    # Reserve notional for other pending opening orders, not protective/closing orders.
+    for order in signed('GET','/fapi/v1/openOrders'):
+        if order.get('reduceOnly') or order.get('closePosition'): continue
+        if order.get('type') in ('STOP_MARKET','TAKE_PROFIT_MARKET'): continue
+        remaining=max(D('0'),D(order.get('origQty','0'))-D(order.get('executedQty','0')))
+        px=D(order.get('price') or '0')
+        if px<=0:
+            try: px=D(public('/fapi/v1/premiumIndex',{'symbol':order['symbol']})['markPrice'])
+            except Exception: raise ValueError('تعذر احتساب الأوامر المعلقة')
+        exposure+=remaining*px
+    room=equity*D('0.10')-exposure
+    filters={f['filterType']:f for f in info['filters']}
+    lot=filters.get('MARKET_LOT_SIZE') or filters.get('LOT_SIZE')
+    if not lot: raise ValueError('شروط حجم الأمر غير متاحة')
+    step=D(lot['stepSize']); minimum=D(lot['minQty'])
+    mark=D(public('/fapi/v1/premiumIndex',{'symbol':symbol})['markPrice'])
+    min_value=D(filters.get('MIN_NOTIONAL',{}).get('notional','5'))
+    # Smallest possible valid order, round up to step.
+    from decimal import ROUND_UP
+    qty=max(minimum,(min_value/mark/step).to_integral_value(rounding=ROUND_UP)*step)
+    if qty*mark>room or qty*mark>free: raise ValueError('الحد الأدنى يتجاوز المتاح من 10% أو الرصيد الحر')
+    # One-way, 1x notional exposure; target is 5% net on margin.
+    gross=abs(take-entry)/entry
+    net=gross-ESTIMATED_ROUND_TRIP_COST
+    if net<TARGET_NET_ROI: raise ValueError('الهدف لا يحقق 5% صافي تقديري على هامش 1x')
+    return qty,mark,net
+
 def entry_order(row):
     if not LIVE: raise ValueError('التداول الحقيقي معطّل: اضبط LIVE_TRADING_ENABLED=true بعد الاختبار')
     symbol=row['symbol']; info=symbol_info(symbol)
     account=signed('GET','/fapi/v2/account')
     if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode؛ هذا الإصدار يدعم One-way فقط')
-    equity=D(account['totalWalletBalance'])
-    if equity<=0: raise ValueError('رصيد Futures غير كافٍ')
-    existing=positions()
-    if any(p['symbol']==symbol for p in existing): raise ValueError('توجد صفقة مفتوحة على هذا الرمز')
-    # Exposure measured by mark price, including other open positions.
-    exposure=sum(abs(D(p['positionAmt']))*D(p['markPrice']) for p in existing)
-    allowed=equity*D('0.10')-exposure
-    notional=min(equity*D('0.02'),allowed)
-    if notional<=0: raise ValueError('وصلت إلى حد التعرض الإجمالي 10%')
+    qty,mark,net=feasibility(symbol,D(row['entry_reference']),D(row['stop_reference']),D(row['take_reference']),info)
     filters={f['filterType']:f for f in info['filters']}
-    lot=filters.get('MARKET_LOT_SIZE',filters.get('LOT_SIZE'))
-    step=D(lot['stepSize']); minqty=D(lot['minQty'])
-    mark=D(public('/fapi/v1/premiumIndex',{'symbol':symbol})['markPrice'])
-    qty=floor_step(notional/mark,step)
-    min_notional=D(filters.get('MIN_NOTIONAL',{}).get('notional','5'))
-    if qty<minqty or qty*mark<min_notional: raise ValueError('حجم الصفقة أقل من الحد الأدنى؛ لن نرفع المخاطرة لتجاوزه')
     # Ensure protective stop is on correct side of live mark price.
     stop=D(row['stop_reference']); side='BUY' if row['direction']=='LONG' else 'SELL'
     if (side=='BUY' and stop>=mark) or (side=='SELL' and stop<=mark):
@@ -163,8 +190,8 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<a href="{{url_for('logout')}}">خروج</a><article><h2>الرصيد</h2><p>{{balance}}</p><small>رصيد المحفظة USDT وليس الربح المحقق</small></article>
 <article><h2>🔑 تغيير مفاتيح Binance API</h2><p><small>يمكنك استبدال المفاتيح متى شئت. لا تُعرض المفاتيح القديمة، وتُحفظ الجديدة مشفرة في Neon. يلزم CREDENTIALS_ENCRYPTION_KEY في Render.</small></p><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form><small>أنشئ المفاتيح بصلاحية Futures فقط، وعطّل السحب Withdrawal. تغيير المفاتيح لا يلغي الصفقات المفتوحة.</small></article>
-<article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>تحليل يدوي لشموع 15 دقيقة مغلقة. قد لا تتوفر بعض الرموز.</small></article>
-<article><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="6">لا توجد فرص</td></tr>{% endfor %}</table></article>
+<article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض 10% وهدف صافي 5% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
+<article><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ 5% على هامش 1x (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
 <article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main></html>'''
 
@@ -195,6 +222,13 @@ def home():
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' ORDER BY id DESC LIMIT 25");pending=c.fetchall()
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
+        filtered=[]
+        for candidate in pending:
+            try:
+                feasibility(candidate['symbol'],D(candidate['entry_reference']),D(candidate['stop_reference']),D(candidate['take_reference']))
+                filtered.append(candidate)
+            except Exception: pass
+        pending=filtered
     except Exception as e: flash('Neon: '+str(e)[:160])
     try: bal=str(wallet())+' USDT';pos=positions()
     except Exception as e: flash('Binance: '+str(e)[:160])
@@ -242,6 +276,7 @@ def scan():
                 symbol_info(sym); p=proposal(sym)
                 if not p: continue
                 direction,entry,stop,take=p
+                feasibility(sym,entry,stop,take)
                 with db() as conn,conn.cursor() as c:
                     c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','CLOSING') LIMIT 1",(sym,))
                     if c.fetchone(): continue
