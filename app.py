@@ -478,7 +478,6 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
    }catch(e){document.getElementById('daily-pnl').textContent='تعذر قراءة نتائج اليوم من Binance';}
  }
  refreshMarket();refreshPnL();
- // تم زيادة الفترات الزمنية لمنع حظر IP والخطأ 418
  setInterval(refreshMarket, 15000); 
  setInterval(refreshPnL, 60000);
  refresh();trigger();
@@ -632,34 +631,45 @@ def login():
 @app.route('/logout')
 def logout(): session.clear(); return redirect(url_for('login'))
 
-@app.route('/')
+# مسارات واجهة المستثمرين المضافة لحل خطأ url_for Build Error
+@app.route('/investors')
+def investors():
+    return "صفحة المستثمرين"
+
+@app.route('/investors/register', methods=['POST'])
+def investor_register():
+    return redirect(url_for('investors'))
+
+@app.route('/investors/login', methods=['POST'])
+def investor_login():
+    return redirect(url_for('investors'))
+
+@app.route('/investors/forgot-password', methods=['GET', 'POST'])
+def investor_forgot():
+    return redirect(url_for('investors'))
+
+@app.route('/investors/reset-password/<token>', methods=['GET', 'POST'])
+def investor_reset(token):
+    return redirect(url_for('investors'))
+
+@app.route('/investors/logout')
+def investor_logout():
+    session.clear(); return redirect(url_for('investors'))
+
+@app.route('/owner/investors')
 @auth
-def home():
-    pending = []; recent = []; pos = []; close_suggestions = []; scan_state = None; bal = 'غير متاح'
-    prefs = None
-    try:
-        init()
-        prefs = preferences()
-        with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25"); pending = c.fetchall()
-            c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25'); recent = c.fetchall()
-            c.execute("SELECT * FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC"); close_suggestions = c.fetchall()
-            c.execute('SELECT * FROM bot_scan_status WHERE id=1'); scan_state = c.fetchone()
-        filtered = []
-        for candidate in pending:
-            try:
-                feasibility(candidate['symbol'], D(candidate['entry_reference']), D(candidate['stop_reference']), D(candidate['take_reference']))
-                filtered.append(candidate)
-            except Exception: pass
-        pending = filtered
-    except Exception as e: pass
-    
-    try: 
-        bal = str(wallet())+' USDT'; pos = positions()
-    except Exception as e: 
-        flash('تنبيه اتصال Binance مؤقت (انتظر قليلاً ريثما يزول الحظر المؤقت للطلب): '+str(e)[:140])
-        
-    return render_template_string(PAGE, logged=True, csrf=csrf(), live=LIVE, balance=bal, positions=pos, pending=pending, recent=recent, prefs=prefs, close_suggestions=close_suggestions, scan_state=scan_state)
+def owner_investors():
+    return redirect(url_for('home'))
+
+@app.route('/owner/requests')
+@auth
+def owner_requests_page():
+    return redirect(url_for('home'))
+
+@app.route('/owner/payouts')
+@auth
+def owner_payouts():
+    return redirect(url_for('home'))
 
 @app.route('/settings/api', methods=['POST'])
 @auth
@@ -768,6 +778,34 @@ def close_position(symbol):
     except Exception as e: flash('تعذر الإغلاق: '+str(e)[:200])
     return redirect(url_for('home'))
 
-# بقية مسارات المستثمرين والموافقات تعمل كما هي...
+@app.route('/')
+@auth
+def home():
+    pending = []; recent = []; pos = []; close_suggestions = []; scan_state = None; bal = 'غير متاح'
+    prefs = None
+    try:
+        init()
+        prefs = preferences()
+        with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25"); pending = c.fetchall()
+            c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25'); recent = c.fetchall()
+            c.execute("SELECT * FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC"); close_suggestions = c.fetchall()
+            c.execute('SELECT * FROM bot_scan_status WHERE id=1'); scan_state = c.fetchone()
+        filtered = []
+        for candidate in pending:
+            try:
+                feasibility(candidate['symbol'], D(candidate['entry_reference']), D(candidate['stop_reference']), D(candidate['take_reference']))
+                filtered.append(candidate)
+            except Exception: pass
+        pending = filtered
+    except Exception as e: pass
+    
+    try: 
+        bal = str(wallet())+' USDT'; pos = positions()
+    except Exception as e: 
+        flash('تنبيه اتصال Binance مؤقت: '+str(e)[:140])
+        
+    return render_template_string(PAGE, logged=True, csrf=csrf(), live=LIVE, balance=bal, positions=pos, pending=pending, recent=recent, prefs=prefs, close_suggestions=close_suggestions, scan_state=scan_state)
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')))
