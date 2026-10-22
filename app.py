@@ -51,6 +51,7 @@ def init():
             target_roi_pct NUMERIC NOT NULL DEFAULT 10,
             updated_at TIMESTAMPTZ DEFAULT NOW())''')
         c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
+        c.execute('''ALTER TABLE bot_preferences ADD COLUMN IF NOT EXISTS is_paused BOOLEAN NOT NULL DEFAULT FALSE''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_api_credentials (id INTEGER PRIMARY KEY CHECK (id=1), api_key_cipher BYTEA NOT NULL, api_secret_cipher BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_close_suggestions (
             symbol TEXT PRIMARY KEY, position_amt NUMERIC NOT NULL,
@@ -73,6 +74,15 @@ def preferences():
     with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
         c.execute('SELECT * FROM bot_preferences WHERE id=1')
         return c.fetchone()
+
+def is_bot_paused():
+    # Fail closed: a database failure must not permit a new trade.
+    with db() as conn, conn.cursor() as c:
+        c.execute('SELECT is_paused FROM bot_preferences WHERE id=1')
+        row = c.fetchone()
+    if row is None:
+        raise RuntimeError('تعذر قراءة حالة إيقاف البوت')
+    return bool(row[0])
 
 def allowed_leverage(symbol, requested):
     # Binance leverage brackets impose symbol-specific limits.
@@ -284,6 +294,7 @@ def feasibility(symbol, entry, stop, take, info=None):
     return qty,mark,net
 
 def entry_order(row):
+    if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول؛ لا يمكن فتح صفقة جديدة')
     if not LIVE or not EXECUTION_AUDITED: raise ValueError('تنفيذ التداول مقفل لحين اختبار الأوامر ووقف الخسارة واعتماد EXECUTION_AUDITED')
     symbol=row['symbol']; info=symbol_info(symbol)
     account=signed('GET','/fapi/v2/account')
@@ -333,6 +344,7 @@ def entry_order(row):
 def auto_scan():
     """Called only by a scheduler using a private token; no orders are sent."""
     init()
+    if is_bot_paused(): return {'status':'paused','created':0}
     created=0
     rejected={}
     with db() as conn,conn.cursor() as c:
@@ -461,6 +473,24 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 {% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance / حظر IP</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p><small>العداد يستند إلى تاريخ انتهاء الحظر الذي ترسله Binance عند توفره. لا يعني انتهاء العداد أن الاتصال عاد مؤكدًا. يتوقف إرسال طلبات Binance أثناء الحظر.</small></article>{% endif %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a></p>
+<article style="border:2px solid #d97706">
+<h2>🛑 مفتاح إيقاف البوت</h2>
+{% if prefs and prefs.is_paused %}
+<p style="color:#fca5a5;font-weight:bold">🔴 البوت متوقف: لا فحص تلقائي ولا فرص أو صفقات دخول جديدة.</p>
+{% else %}
+<p style="color:#86efac;font-weight:bold">🟢 البوت يعمل: يمكنك إيقافه في أي وقت.</p>
+{% endif %}
+<form method="post" action="{{url_for('toggle_bot')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+{% if prefs and prefs.is_paused %}
+<button type="submit" style="background:#15803d">▶️ إعادة تشغيل البوت</button>
+{% else %}
+<button type="submit" class="danger" onclick="return confirm('إيقاف الفحص والدخول في صفقات جديدة؟ المراكز الحالية لن تُغلق تلقائياً.')">🛑 إيقاف البوت بالكامل</button>
+{% endif %}
+</form>
+<small>الإيقاف محفوظ في Neon ويستمر بعد إعادة تشغيل Render. المراكز والأوامر المفتوحة في Binance لا تُغلق تلقائيًا. تظل لوحة الإدارة متاحة.</small>
+</article>
+
 <article><h2>🛡️ إدارة البوت الكويتي</h2><p><small>روابط الإدارة الخاصة بك — لا تظهر للمستثمرين.</small></p>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
 <a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
@@ -598,6 +628,7 @@ _price_cache={'at':0.0,'data':{}}
 def browser_watch():
     try:
         check_csrf()
+        if is_bot_paused(): return {'status':'paused','scanned':False}
         # Cross-process rate limiting: only one browser scan per 60 seconds.
         if _cooldown_state()['remaining_seconds']>0:
             return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
@@ -1131,8 +1162,25 @@ def owner_payout_settings_save():
         c.execute('UPDATE owner_payout_settings SET destination_type=%s,rain_network=%s,rain_address=%s,bank_name=%s,bank_iban=%s,updated_at=NOW() WHERE id=1',(kind,network,address,bank,iban))
     flash('تم حفظ وجهة الاستلام. لم يتم إرسال أي أموال.');return redirect(url_for('owner_payouts'))
 
+@app.route('/toggle-bot', methods=['POST'])
+@auth
+def toggle_bot():
+    try:
+        check_csrf()
+        init()
+        with db() as conn, conn.cursor() as c:
+            c.execute('UPDATE bot_preferences SET is_paused=NOT is_paused, updated_at=NOW() WHERE id=1 RETURNING is_paused')
+            paused = c.fetchone()[0]
+            if paused:
+                c.execute("UPDATE bot_orders_v2 SET status='CANCELLED' WHERE status='PENDING'")
+        flash('🛑 تم إيقاف الفحص وفتح الصفقات الجديدة.' if paused else '▶️ تم استئناف الفحص والسماح بفرص جديدة.')
+    except Exception:
+        logging.exception('Failed to change bot pause state')
+        flash('تعذر تغيير حالة البوت؛ تحقق من قاعدة البيانات وسجلات Render.')
+    return redirect(url_for('home'))
+
 @app.route('/health')
-def health(): return {'status':'web_running','live_trading_enabled':LIVE,'execution_audited':EXECUTION_AUDITED,'trading_orders_enabled':LIVE and EXECUTION_AUDITED}
+def health(): return {'status':'web_running','live_trading_enabled':LIVE,'execution_audited':EXECUTION_AUDITED,'trading_orders_enabled':LIVE and EXECUTION_AUDITED and not is_bot_paused()}
 
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -1167,7 +1215,7 @@ def home():
         _assert_binance_available()
         bal=str(wallet())+' USDT';pos=positions()
     except Exception as e: flash('Binance: '+str(e)[:160])
-    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences(),close_suggestions=close_suggestions,scan_state=scan_state)
+    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state)
 
 
 @app.route('/settings/api',methods=['POST'])
@@ -1225,7 +1273,9 @@ def save_preferences():
 @auth
 def scan():
     try:
-        check_csrf();init();count=0
+        check_csrf();init()
+        if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول')
+        count=0
         for sym in SYMBOLS:
             try:
                 symbol_info(sym); p=proposal(sym)
@@ -1256,6 +1306,7 @@ def reject(order_id):
 def approve(order_id):
     try:
         check_csrf()
+        if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول')
         if not LIVE or not EXECUTION_AUDITED: raise ValueError('تنفيذ التداول مقفل لحين اختبار الأوامر واعتماد EXECUTION_AUDITED')
         init()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
