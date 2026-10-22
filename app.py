@@ -182,17 +182,17 @@ def public(path,p=None):
         _public_cache[key]=(time.monotonic(),data)
     return data
 
-@app.route('/api/binance-ban-status')
-@auth
-def binance_ban_status():
-    return _cooldown_state(force=True)
-
 def auth(f):
     @wraps(f)
     def wrap(*a,**kw):
         if not session.get('admin'): return redirect(url_for('login'))
         return f(*a,**kw)
     return wrap
+
+@app.route('/api/binance-ban-status')
+@auth
+def binance_ban_status():
+    return _cooldown_state(force=True)
 
 def csrf():
     if 'csrf' not in session: session['csrf']=secrets.token_hex(24)
