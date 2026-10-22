@@ -356,7 +356,7 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state">مصدر خارجي، وليس سعر تنفيذ Binance.</small></article>
 <article><h2>📊 أرباح وخسائر اليوم</h2><p><small>اليوم بتوقيت الكويت، من سجل دخل Binance Futures: الربح والخسارة المحققة، العمولات، والتمويل. لا يشمل أرباح المراكز غير المغلقة.</small></p><div id="daily-pnl">جاري احتساب النتائج...</div></article>
 <article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
-<article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض المحدد وهدف صافي 10% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
+<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p id="auto-scan-status">⏳ يبدأ التحليل تلقائيًا بعد فتح الصفحة...</p><small>لا تحتاج إلى الضغط على أي زر. تُحدث الشاشة كل ثانية ويُجرى فحص فني كامل تقريبًا كل دقيقة أثناء بقاء الصفحة مفتوحة ونشطة. قد لا توجد فرص تستوفي الشروط. لا تُرسل أوامر شراء أو بيع إلا بعد موافقتك، ومع تفعيل التداول الحقيقي بشكل منفصل.</small></article>
 <article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
 <article><h2>🕒 مراقبة تلقائية أثناء فتح الصفحة</h2>
@@ -409,7 +409,19 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
    }catch(e){watch.textContent='تعذر تحديث الفرص مؤقتًا';}
    finally{loading=false;}
  }
- async function trigger(){if(watching||document.hidden)return;watching=true;try{await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin'});}catch(e){}finally{watching=false;refresh();}}
+ async function trigger(){
+   if(watching||document.hidden)return;
+   watching=true;
+   const label=document.getElementById('auto-scan-status');
+   if(label)label.textContent='⏳ المراقبة تعمل؛ جاري التحقق من فرص التداول...';
+   try{
+     const response=await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin',cache:'no-store'});
+     const result=await response.json();
+     if(!response.ok)throw Error(result.error||'تعذر الفحص');
+     if(label)label.textContent=result.scanned?'✅ اكتمل الفحص الفني التلقائي':'🟢 المراقبة تعمل؛ الفحص الفني التالي عند اكتمال الدقيقة';
+   }catch(e){if(label)label.textContent='⚠️ فشل الفحص التلقائي: '+e.message;}
+   finally{watching=false;refresh();}
+ }
  const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
  async function refreshMarket(){
    const tbody=document.getElementById('external-prices');
@@ -462,7 +474,11 @@ def browser_watch():
                     should_scan=True
         if should_scan:
             try: auto_scan()
-            except Exception: logging.exception('Browser market scan failed')
+            except Exception:
+                logging.exception('Browser market scan failed')
+                with db() as conn,conn.cursor() as c:
+                    c.execute("UPDATE bot_scan_status SET checked_at=NULL,reason=%s WHERE id=1",('تعذر الفحص التلقائي؛ راجع سجلات Render',))
+                return {'error':'فشل التحليل الفني؛ راجع سجلات Render'},503
         try: monitor_close_suggestions()
         except Exception: logging.exception('Browser close monitor failed')
         return {'status':'ok','scanned':should_scan}
@@ -580,6 +596,9 @@ INVESTOR_PAGE="""<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
 <article><h2>أسعار الأسواق</h2><small>من Yahoo Finance غير الرسمي؛ قد تتأخر الأسعار أو تكون غير متاحة. تتحدث الشاشة كل ثانية والمصدر نحو كل 30 ثانية.</small><table><thead><tr><th>السوق</th><th>السعر الإرشادي</th><th>وقت المصدر</th></tr></thead><tbody id="prices"><tr><td colspan="3">جاري التحميل...</td></tr></tbody></table></article>
 {% else %}<article><h2>إنشاء حساب جديد</h2><form method="post" action="{{url_for('investor_register')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>البريد الإلكتروني<input type="email" name="email" autocomplete="email" required maxlength="254"></label><label>كلمة المرور (12 حرفاً على الأقل)<input type="password" name="password" autocomplete="new-password" minlength="12" required></label><div class="terms">{{terms}}</div><label><input style="width:auto" type="checkbox" name="accept" value="yes" required> قرأت ووافقت على شروط النسخة التجريبية أعلاه</label><button>تسجيل وبدء 7 أيام تجريبية</button></form></article>
 <article><h2>تسجيل الدخول</h2><form method="post" action="{{url_for('investor_login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد الإلكتروني" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form><p><a href="{{url_for('investor_forgot')}}">نسيت كلمة المرور؟ / Forgot password?</a></p></article>{% endif %}
+<article style="border:1px solid #577b9e"><h2>🔐 دخول مسؤول البوت</h2><p><small>هذه الخانة خاصة بالمسؤول فقط. لا تستخدم بيانات المستثمر للدخول إلى الإدارة.</small></p>
+{% if admin_logged %}<p>أنت مسجل دخولك كمسؤول.</p><p><a href="{{url_for('home')}}">لوحة التداول</a> | <a href="{{url_for('owner_investors')}}">إدارة المستثمرين</a> | <a href="{{url_for('owner_requests')}}">الموافقات</a></p>
+{% else %}<form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>بريد المسؤول<input type="email" name="email" autocomplete="username" required></label><label>كلمة مرور المسؤول<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">الدخول إلى الإدارة</button></form>{% endif %}</article>
 <article><h2>العروض المقترحة — الدفع غير مفعل</h2><table><tr><th>العرض</th><th>السعر المبدئي</th></tr><tr><td>7 أيام تجربة</td><td>مجاناً</td></tr><tr><td>أسبوع</td><td>19.99$</td></tr><tr><td>3 أسابيع + الرابع مجاناً</td><td>يحتاج تأكيد طريقة الحساب</td></tr><tr><td>3 أشهر + الرابع مجاناً</td><td>49.99$ — يحتاج تأكيد هل السعر شهري أم إجمالي</td></tr><tr><td>عام + شهران مجاناً</td><td>99.99$ — يحتاج تأكيد هل السعر سنوي</td></tr></table><p><small>خصم نهاية الأسبوع المقترح: 10%، لم يُفعّل لعدم وجود دفع بعد.</small></p></article></main>
 {% if user %}<script>const markets=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['WTI','CLUSDT'],['برنت','BZUSDT']];async function prices(){if(document.hidden)return;try{const r=await fetch('/api/market-prices',{cache:'no-store'});if(!r.ok)throw Error('network');const d=await r.json(),body=document.getElementById('prices');body.replaceChildren();for(const [name,sym] of markets){const tr=document.createElement('tr'),p=d.prices[sym];for(const value of [name,p&&p.price!=null?Number(p.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح',p&&p.asof?new Date(p.asof).toLocaleTimeString('ar-KW'):'—']){const td=document.createElement('td');td.textContent=value;tr.appendChild(td)}body.appendChild(tr)}}catch(e){}}prices();setInterval(prices,1000)</script>{% endif %}<script>
 const labels={
@@ -607,7 +626,7 @@ def investors():
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute('SELECT email,subscription_status,trial_end,paid_until FROM investor_accounts WHERE id=%s',(session['investor_id'],))
             user=c.fetchone()
-    return render_template_string(INVESTOR_PAGE,user=user,csrf=csrf(),terms=INVESTOR_TERMS)
+    return render_template_string(INVESTOR_PAGE,user=user,csrf=csrf(),terms=INVESTOR_TERMS,admin_logged=bool(session.get('admin')))
 
 @app.route('/investors/register',methods=['POST'])
 def investor_register():
