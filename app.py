@@ -1,7 +1,7 @@
 """Alkuwaiti Bot - human approved USDT-M futures execution.
 Requires explicit LIVE_TRADING_ENABLED=true. Test with Binance testnet first.
 """
-import os, time, hmac, hashlib, secrets, logging
+import os, time, hmac, hashlib, secrets, logging, threading
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from datetime import timedelta
@@ -260,34 +260,42 @@ def auto_scan():
                     created+=1
                 except Exception as e:
                     rejected[sym]=str(e)[:110]
-            # Approximate P&L after round-trip fees, using current mark and initial margin.
-            # This is a suggestion only, never an automated close.
-            try:
-                prefs=preferences()
-                threshold=D(str(prefs['target_roi_pct']))/100
-                for p in positions():
-                    symbol=p['symbol']
-                    if symbol not in SYMBOLS: continue
-                    amount=D(p['positionAmt'])
-                    mark=D(p['markPrice'])
-                    entry=D(p['entryPrice'])
-                    lev=D(str(p.get('leverage','1')))
-                    if entry<=0 or mark<=0 or amount==0 or lev<=0: continue
-                    gross=(mark-entry)/entry if amount>0 else (entry-mark)/entry
-                    roi=(gross-ESTIMATED_ROUND_TRIP_COST)*lev
-                    est_usdt=abs(amount)*(mark-entry)*(1 if amount>0 else -1)-abs(amount)*mark*ESTIMATED_ROUND_TRIP_COST
-                    if roi>=threshold and est_usdt>0:
-                        c.execute("""INSERT INTO bot_close_suggestions(symbol,position_amt,estimated_net_roi,estimated_net_usdt,created_at,status)
-                          VALUES(%s,%s,%s,%s,NOW(),'PENDING')
-                          ON CONFLICT(symbol) DO UPDATE SET position_amt=EXCLUDED.position_amt,
-                          estimated_net_roi=EXCLUDED.estimated_net_roi,estimated_net_usdt=EXCLUDED.estimated_net_usdt,
-                          created_at=NOW(),status=CASE WHEN bot_close_suggestions.status='REJECTED' AND bot_close_suggestions.created_at>NOW()-INTERVAL '10 minutes' THEN 'REJECTED' ELSE 'PENDING' END""",(symbol,amount,roi,est_usdt))
-            except Exception as e:
-                rejected['CLOSE_CHECK']=str(e)[:110]
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(created,str(rejected)[:1800]))
             return {'status':'ok','created':created,'excluded':len(rejected)}
         finally:
             c.execute("SELECT pg_advisory_unlock(68210314)")
+
+
+_close_check_lock=threading.Lock()
+_close_check_at=0.0
+def monitor_close_suggestions():
+    global _close_check_at
+    with _close_check_lock:
+        now=time.monotonic()
+        if now-_close_check_at<5: return {'status':'cached'}
+        _close_check_at=now
+    init()
+    prefs=preferences()
+    threshold=D(str(prefs['target_roi_pct']))/100
+    ps=positions()
+    with db() as conn,conn.cursor() as c:
+        c.execute("DELETE FROM bot_close_suggestions WHERE created_at<NOW()-INTERVAL '10 minutes'")
+        for p in ps:
+            symbol=p['symbol']
+            if symbol not in SYMBOLS: continue
+            amount=D(p['positionAmt']);mark=D(p['markPrice']);entry=D(p['entryPrice'])
+            lev=D(str(p.get('leverage','1')))
+            if entry<=0 or mark<=0 or amount==0 or lev<=0: continue
+            gross=(mark-entry)/entry if amount>0 else (entry-mark)/entry
+            roi=(gross-ESTIMATED_ROUND_TRIP_COST)*lev
+            est_usdt=abs(amount)*(mark-entry)*(1 if amount>0 else -1)-abs(amount)*mark*ESTIMATED_ROUND_TRIP_COST
+            if roi>=threshold and est_usdt>0:
+                c.execute("""INSERT INTO bot_close_suggestions(symbol,position_amt,estimated_net_roi,estimated_net_usdt,created_at,status)
+                  VALUES(%s,%s,%s,%s,NOW(),'PENDING')
+                  ON CONFLICT(symbol) DO UPDATE SET position_amt=EXCLUDED.position_amt,
+                  estimated_net_roi=EXCLUDED.estimated_net_roi,estimated_net_usdt=EXCLUDED.estimated_net_usdt,
+                  created_at=NOW(),status=CASE WHEN bot_close_suggestions.status='REJECTED' AND bot_close_suggestions.created_at>NOW()-INTERVAL '10 minutes' THEN 'REJECTED' ELSE 'PENDING' END""",(symbol,amount,roi,est_usdt))
+    return {'status':'ok'}
 
 @app.route('/tasks/scan',methods=['POST'])
 def scheduled_scan():
@@ -343,24 +351,123 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
 <button>حفظ إعدادات التحليل</button></form>
 <p class="warn">تحذير: الرافعة 150x قد تؤدي إلى تصفية سريعة وخسارة الهامش. البوت لا يستطيع زيادة رصيد Binance أو ضمان 10% ربح.</p>
 </article>
+<article><h2>📈 أسعار الأسواق — Google</h2><p><strong>تنبيه:</strong> Google Search لا يقدم API رسميًا عامًا لأسعار هذه الأسواق كل ثانية. لذلك لا يعرض البوت أرقامًا مخمّنة أو يوهمك أنها أسعار لحظية. اضغط على السوق لعرض السعر المتاح في Google، وقد يكون متأخرًا أو مختلفًا عن عقد Binance.</p><div id="google-clock">وقت الشاشة: —</div><table><thead><tr><th>السوق</th><th>رمز Binance</th><th>Google</th></tr></thead><tbody><tr><td>بيتكوين</td><td>BTCUSDT</td><td><a href="https://www.google.com/search?q=BTC-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>إيثريوم</td><td>ETHUSDT</td><td><a href="https://www.google.com/search?q=ETH-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>BNB</td><td>BNBUSDT</td><td><a href="https://www.google.com/search?q=BNB-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>سولانا</td><td>SOLUSDT</td><td><a href="https://www.google.com/search?q=SOL-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>XRP</td><td>XRPUSDT</td><td><a href="https://www.google.com/search?q=XRP-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>الذهب</td><td>XAUUSDT</td><td><a href="https://www.google.com/search?q=gold%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>الفضة</td><td>XAGUSDT</td><td><a href="https://www.google.com/search?q=silver%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>نفط WTI</td><td>CLUSDT</td><td><a href="https://www.google.com/search?q=WTI%20crude%20oil%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>نفط برنت</td><td>BZUSDT</td><td><a href="https://www.google.com/search?q=Brent%20crude%20oil%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr></tbody></table><small>يُحدّث وقت الشاشة كل ثانية فقط؛ الأسعار تُعرض من صفحات Google عند فتحها، وليس عبر تحديث آلي مضمون.</small></article>
 <article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
 <article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض المحدد وهدف صافي 10% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
-<article><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
+<article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
-<article><h2>🕒 التحليل التلقائي كل دقيقة</h2>
-<p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يُشغّل المجدول بعد'}}</p>
+<article><h2>🕒 مراقبة تلقائية أثناء فتح الصفحة</h2>
+<p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يبدأ التحليل بعد'}}</p>
 <p>فرص جديدة في آخر فحص: {{scan_state.opportunities if scan_state else 0}}</p>
 <details><summary>أسباب استبعاد الفرص</summary><small>{{scan_state.reason if scan_state else 'لا توجد بيانات'}}</small></details>
-<small>يجب إعداد مجدول خارجي يرسل طلب POST كل دقيقة إلى /tasks/scan مع X-Scan-Token. لا تُرسل أوامر تداول أثناء التحليل.</small></article>
-<article><h2>🔔 اقتراحات إغلاق بانتظار قرارك</h2>
-{% for x in close_suggestions %}
-<p><b>{{x.symbol}}</b> | صافي الربح التقديري {{(x.estimated_net_roi*100)|round(2)}}% | {{x.estimated_net_usdt|round(4)}} USDT</p>
-<form method="post" action="{{url_for('approve_close_suggestion',symbol=x.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">موافقة وإغلاق الآن</button></form>
-<form method="post" action="{{url_for('reject_close_suggestion',symbol=x.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>رفض الاقتراح</button></form>
-{% else %}<p>لا توجد اقتراحات إغلاق تحقق الهدف حاليًا.</p>{% endfor %}
+<div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 60 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
+<article id="exit-suggestions"><h2>🔔 اقتراحات إغلاق بانتظار قرارك</h2>
+<div id="live-exit-rows">جارٍ فحص المراكز...</div>
 <small>الربح تقديري؛ الرسوم الفعلية والتمويل والانزلاق قد تغير النتيجة. يمكنك إغلاق أي مركز يدويًا من جدول المراكز.</small>
 </article>
-<article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main></html>'''
+<article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main><script>
+(function(){
+ const el=document.getElementById('google-clock');
+ if(!el)return;
+ function tick(){if(!document.hidden)el.textContent='وقت الشاشة: '+new Date().toLocaleTimeString('ar-KW');}
+ tick();setInterval(tick,1000);
+})();
+
+(function(){
+ const watch=document.getElementById('watch-status');
+ if(!watch)return;
+ const csrf={{ csrf|tojson }};
+ let watching=false,loading=false;
+ function td(tr,value){const cell=document.createElement('td');cell.textContent=String(value);tr.appendChild(cell);return cell;}
+ function action(tr,path,label,danger){
+   const form=document.createElement('form');form.method='post';form.action=path;
+   const token=document.createElement('input');token.type='hidden';token.name='csrf';token.value=csrf;form.appendChild(token);
+   const btn=document.createElement('button');btn.textContent=label;if(danger)btn.className='danger';form.appendChild(btn);
+   tr.lastChild.appendChild(form);
+ }
+ async function refresh(){
+   if(loading||document.hidden)return;loading=true;
+   try{
+     const res=await fetch('/api/browser-suggestions',{credentials:'same-origin',cache:'no-store'});
+     if(!res.ok)throw Error('suggestions');
+     const data=await res.json();
+     const entry=document.querySelector('#entry-suggestions table');
+     if(entry){const rows=entry.querySelectorAll('tr');rows.forEach((r,i)=>{if(i>0)r.remove()});
+       for(const x of data.entries){const tr=document.createElement('tr');td(tr,x.symbol);td(tr,x.direction);td(tr,x.entry_reference);td(tr,x.take_reference);td(tr,x.stop_reference);td(tr,'هدف صافي تقديري');td(tr,'');action(tr,'/approve/'+encodeURIComponent(x.id),'موافقة وفتح فورًا',false);action(tr,'/reject/'+encodeURIComponent(x.id),'رفض',true);entry.appendChild(tr)}
+       if(!data.entries.length){const tr=document.createElement('tr');const c=td(tr,'لا توجد فرص مناسبة حاليًا');c.colSpan=7;entry.appendChild(tr)}
+     }
+     const exit=document.getElementById('exit-suggestions');
+     if(exit){let holder=document.getElementById('live-exit-rows');if(!holder){holder=document.createElement('div');holder.id='live-exit-rows';exit.insertBefore(holder,exit.children[1]||null)}holder.replaceChildren();
+       for(const x of data.exits){const p=document.createElement('p');p.textContent=x.symbol+' | صافي تقديري '+(Number(x.estimated_net_roi)*100).toFixed(2)+'% | '+x.estimated_net_usdt+' USDT';holder.appendChild(p);
+         const tr=document.createElement('div');td(tr,'');action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/approve','موافقة وإغلاق الآن',true);action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/reject','رفض الاقتراح',false);holder.appendChild(tr)}
+       if(!data.exits.length){const p=document.createElement('p');p.textContent='لا توجد اقتراحات إغلاق تحقق الهدف حاليًا.';holder.appendChild(p)}
+     }
+     watch.textContent='المراقبة تعمل | آخر فحص فني: '+(data.last_scan?new Date(data.last_scan).toLocaleTimeString('ar-KW'):'لم يبدأ');
+   }catch(e){watch.textContent='تعذر تحديث الفرص مؤقتًا';}
+   finally{loading=false;}
+ }
+ async function trigger(){if(watching||document.hidden)return;watching=true;try{await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin'});}catch(e){}finally{watching=false;refresh();}}
+ refresh();trigger();setInterval(refresh,1000);setInterval(trigger,5000);
+})();
+</script></html>'''
+
+# Public market data, cached to protect the exchange from one request per viewer per second.
+_price_lock=threading.Lock()
+_price_cache={'at':0.0,'data':{}}
+
+
+@app.route('/api/browser-watch',methods=['POST'])
+@auth
+def browser_watch():
+    try:
+        check_csrf()
+        # Cross-process rate limiting: only one browser scan per 60 seconds.
+        init()
+        should_scan=False
+        with db() as conn,conn.cursor() as c:
+            c.execute("SELECT pg_try_advisory_xact_lock(68210315)")
+            if c.fetchone()[0]:
+                c.execute("SELECT checked_at FROM bot_scan_status WHERE id=1 FOR UPDATE")
+                last=c.fetchone()[0]
+                if last is None or (datetime.now(timezone.utc)-last).total_seconds()>=60:
+                    c.execute("UPDATE bot_scan_status SET checked_at=NOW() WHERE id=1")
+                    should_scan=True
+        if should_scan:
+            try: auto_scan()
+            except Exception: logging.exception('Browser market scan failed')
+        try: monitor_close_suggestions()
+        except Exception: logging.exception('Browser close monitor failed')
+        return {'status':'ok','scanned':should_scan}
+    except Exception:
+        logging.exception('Browser watch failed')
+        return {'error':'تعذرت المراقبة مؤقتًا'},503
+
+@app.route('/api/browser-suggestions')
+@auth
+def browser_suggestions():
+    try:
+        init()
+        with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute("SELECT id,symbol,direction,entry_reference,take_reference,stop_reference FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25")
+            entries=c.fetchall()
+            c.execute("SELECT symbol,estimated_net_roi,estimated_net_usdt FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC")
+            exits=c.fetchall()
+            c.execute('SELECT checked_at,opportunities FROM bot_scan_status WHERE id=1')
+            status=c.fetchone()
+        # Render values as strings to avoid JSON Decimal serialization differences.
+        return {'entries':[{k:str(v) for k,v in x.items()} for x in entries],
+                'exits':[{k:str(v) for k,v in x.items()} for x in exits],
+                'last_scan':status['checked_at'].isoformat() if status and status['checked_at'] else None}
+    except Exception:
+        logging.exception('Suggestions refresh failed')
+        return {'error':'تعذر جلب الفرص'},503
+
+@app.route('/api/market-prices')
+@auth
+def market_prices():
+    # Do not scrape Google or silently substitute Binance prices.
+    return {'prices':{},'source':'Google Search','realtime':False,
+            'message':'لا تتوفر واجهة Google رسمية مضمونة لتحديث الأسعار كل ثانية. استخدم روابط Google في اللوحة.'},200
 
 @app.route('/health')
 def health(): return {'status':'ok','live_trading_enabled':LIVE}
