@@ -161,8 +161,39 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية. أوقفنا طلبات Binance حتى انتهاء المهلة.')
 
+# V29: conservative cross-worker REST limiter. Binance limits are weighted,
+# endpoint-specific and may also include other services on Render's shared IP.
+# One request/second is a conservative ceiling, not a guaranteed safe quota.
+REST_MIN_INTERVAL_SECONDS = max(1.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.5')))
+_scan_local = threading.local()
+
+def _reserve_binance_request():
+    # PostgreSQL row lock serializes requests across Gunicorn workers/instances.
+    # Fail closed if Neon cannot coordinate the rate limit.
+    with db() as conn, conn.cursor() as c:
+        c.execute('''CREATE TABLE IF NOT EXISTS bot_binance_rate_limit
+                     (id INTEGER PRIMARY KEY CHECK(id=1), next_allowed TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+        c.execute('INSERT INTO bot_binance_rate_limit(id) VALUES(1) ON CONFLICT DO NOTHING')
+        c.execute('SELECT next_allowed FROM bot_binance_rate_limit WHERE id=1 FOR UPDATE')
+        next_allowed = c.fetchone()[0]
+        now = datetime.now(timezone.utc)
+        delay = max(0.0, (next_allowed-now).total_seconds())
+        if delay > 8:
+            raise ValueError('تم تأجيل طلب Binance لحماية عنوان IP من كثرة الطلبات')
+        from datetime import timedelta
+        reserved_at = max(next_allowed, now)
+        c.execute('UPDATE bot_binance_rate_limit SET next_allowed=%s WHERE id=1',
+                  (reserved_at + timedelta(seconds=REST_MIN_INTERVAL_SECONDS),))
+    if delay: time.sleep(delay)
+    _assert_binance_available()
+
 def signed(method,path,params=None):
     _assert_binance_available()
+    cache=getattr(_scan_local,'signed_cache',None)
+    cache_key=(path,tuple(sorted((str(k),str(v)) for k,v in (params or {}).items())))
+    if method=='GET' and cache is not None and path in ('/fapi/v2/account','/fapi/v2/positionRisk','/fapi/v1/openOrders','/fapi/v1/leverageBracket') and cache_key in cache:
+        return cache[cache_key]
+    _reserve_binance_request()
     KEY,SECRET=credentials()
     if not KEY or not SECRET: raise ValueError('مفاتيح Binance غير موجودة في Render')
     p=dict(params or {});p['timestamp']=int(time.time()*1000);p['recvWindow']=5000
@@ -172,16 +203,20 @@ def signed(method,path,params=None):
     if not r.ok:
         if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر في لوحة المسؤول')
         raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
-    return r.json()
+    data=r.json()
+    if method=='GET' and cache is not None and path in ('/fapi/v2/account','/fapi/v2/positionRisk','/fapi/v1/openOrders','/fapi/v1/leverageBracket'):
+        cache[cache_key]=data
+    return data
 
 def public(path,p=None):
     _assert_binance_available()
     # Exchange metadata and closed candles do not need re-fetching every scan.
     key=(path,tuple(sorted((str(k),str(v)) for k,v in (p or {}).items())))
-    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (60 if path=='/fapi/v1/klines' else 3)
+    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (75 if path=='/fapi/v1/klines' else 15)
     with _public_cache_lock:
         item=_public_cache.get(key)
         if item and time.monotonic()-item[0]<ttl:return item[1]
+    _reserve_binance_request()
     r=requests.get(BASE+path,params=p,timeout=12)
     _record_limit(r)
     if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر')
@@ -342,9 +377,28 @@ def entry_order(row):
 
 
 def auto_scan():
-    """Called only by a scheduler using a private token; no orders are sent."""
+    """Generate proposals only; never place orders. Globally max once per 60 seconds."""
     init()
+    with db() as conn, conn.cursor() as c:
+        c.execute('''CREATE TABLE IF NOT EXISTS bot_scan_gate
+                     (id INTEGER PRIMARY KEY CHECK(id=1), started_at TIMESTAMPTZ)''')
+        c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
+        c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
+                     AND (started_at IS NULL OR started_at<NOW()-INTERVAL '60 seconds') RETURNING id''')
+        if not c.fetchone(): return {'status':'rate_limited','created':0}
+    if _cooldown_state()['remaining_seconds']>0:
+        return {'status':'binance_banned','created':0}
+
     if is_bot_paused(): return {'status':'paused','created':0}
+    created=0
+    rejected={}
+    _scan_local.signed_cache={}
+    try:
+        return _auto_scan_body()
+    finally:
+        _scan_local.signed_cache=None
+
+def _auto_scan_body():
     created=0
     rejected={}
     with db() as conn,conn.cursor() as c:
@@ -384,7 +438,7 @@ def monitor_close_suggestions():
     global _close_check_at
     with _close_check_lock:
         now=time.monotonic()
-        if now-_close_check_at<5: return {'status':'cached'}
+        if now-_close_check_at<60: return {'status':'cached'}
         _close_check_at=now
     init()
     prefs=preferences()
@@ -602,8 +656,8 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      document.getElementById('daily-pnl').textContent='أرباح محققة: '+p.gains+' USDT | خسائر محققة: '+p.losses+' USDT | عمولات وتمويل: '+p.fees_funding+' USDT | الصافي: '+p.net+' USDT | '+p.day;
    }catch(e){document.getElementById('daily-pnl').textContent='تعذر قراءة نتائج اليوم من Binance';}
  }
- refreshMarket();refreshPnL();setInterval(refreshMarket,1000);setInterval(refreshPnL,60000);
- refresh();trigger();setInterval(refresh,1000);setInterval(trigger,5000);
+ refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,60000);
+ refresh();trigger();setInterval(refresh,10000);setInterval(trigger,60000);
 })();
 </script><script>(function(){
  let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
@@ -633,22 +687,8 @@ def browser_watch():
         if _cooldown_state()['remaining_seconds']>0:
             return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
         init()
-        should_scan=False
-        with db() as conn,conn.cursor() as c:
-            c.execute("SELECT pg_try_advisory_xact_lock(68210315)")
-            if c.fetchone()[0]:
-                c.execute("SELECT checked_at FROM bot_scan_status WHERE id=1 FOR UPDATE")
-                last=c.fetchone()[0]
-                if last is None or (datetime.now(timezone.utc)-last).total_seconds()>=60:
-                    c.execute("UPDATE bot_scan_status SET checked_at=NOW() WHERE id=1")
-                    should_scan=True
-        if should_scan:
-            try: auto_scan()
-            except Exception:
-                logging.exception('Browser market scan failed')
-                with db() as conn,conn.cursor() as c:
-                    c.execute("UPDATE bot_scan_status SET checked_at=NULL,reason=%s WHERE id=1",('تعذر الفحص التلقائي؛ راجع سجلات Render',))
-                return {'error':'فشل التحليل الفني؛ راجع سجلات Render'},503
+        result=auto_scan()
+        should_scan=result.get('status')=='ok'
         try: monitor_close_suggestions()
         except Exception: logging.exception('Browser close monitor failed')
         return {'status':'ok','scanned':should_scan}
