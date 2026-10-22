@@ -591,7 +591,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
   function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
   window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل' if live else '🔒 التداول الحقيقي معطل — وضع التحليل فقط'}}</p>
+})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V36</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل' if live else '🔒 التداول الحقيقي معطل — وضع التحليل فقط'}}</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
 {% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance / حظر IP</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p><small>العداد يستند إلى تاريخ انتهاء الحظر الذي ترسله Binance عند توفره. لا يعني انتهاء العداد أن الاتصال عاد مؤكدًا. يتوقف إرسال طلبات Binance أثناء الحظر.</small></article>{% endif %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
@@ -631,6 +631,15 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <button>حفظ إعدادات التحليل</button></form>
 <p class="warn">تحذير: الرافعة 150x قد تؤدي إلى تصفية سريعة وخسارة الهامش. البوت لا يستطيع زيادة رصيد Binance أو ضمان 10% ربح.</p>
 </article>
+<article style="border:2px solid #1d9b83"><h2>⚡ أسعار Binance Futures المباشرة — WebSocket</h2>
+<p id="v36-ws-status" aria-live="polite">جاري الاتصال بالبث المباشر...</p>
+<small>أسعار Mark Price لعقود USDT-M المتاحة؛ ليست سعر تنفيذ مضمونًا. يتم تحديثها من Binance WebSocket دون طلب REST كل ثانية. عند انقطاع البث تظهر حالة الانقطاع ولا تُعرض الأسعار القديمة على أنها مباشرة.</small>
+<table><thead><tr><th>الرمز</th><th>Mark Price (USDT)</th><th>وقت التحديث</th></tr></thead><tbody id="v36-live-market"><tr><td colspan="3">بانتظار البث...</td></tr></tbody></table></article>
+<article><h2>💹 المراكز: ربح وخسارة متغيرة تقديريًا</h2>
+<p id="v36-position-status">بانتظار البث المباشر...</p>
+<table><thead><tr><th>الرمز</th><th>الكمية المحفوظة</th><th>سعر الدخول المحفوظ</th><th>Mark Price</th><th>ربح/خسارة تقديري</th></tr></thead><tbody id="v36-live-positions"></tbody></table>
+<p id="v36-equity">رصيد المحفظة المؤكد يبقى آخر لقطة محفوظة؛ القيمة الإجمالية المتغيرة هنا تقديرية وليست رصيد Binance المؤكد.</p>
+<small>حجم المركز وسعر دخوله مأخوذان من آخر لقطة محفوظة، وقد يتغيران في Binance دون علم الشاشة. التقدير لا يشمل الرسوم أو التمويل، ولا يُستخدم لتنفيذ الأوامر. لتحديث المراكز الحقيقية استخدم زر تحديث الرصيد المحدود أعلاه.</small></article>
 <article><h2>📈 الأسعار داخل البوت</h2><p><small>بيانات Yahoo Finance العامة غير الرسمية، قد تكون متأخرة أو غير متاحة؛ تختلف عن عقود Binance. يتم تحديث الشاشة كل ثانية، وجلب المصدر كل 30 ثانية تقريبًا.</small></p>
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state">مصدر خارجي، وليس سعر تنفيذ Binance.</small></article>
 <article><h2>📊 أرباح وخسائر اليوم</h2><p><small>اليوم بتوقيت الكويت، من سجل دخل Binance Futures: الربح والخسارة المحققة، العمولات، والتمويل. لا يشمل أرباح المراكز غير المغلقة.</small></p><div id="daily-pnl">جاري عرض آخر نتيجة محفوظة...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث أرباح وخسائر اليوم (كل 15 دقيقة)</button></form><small>النتائج المحفوظة قديمة حتى تؤكد Binance تحديثها؛ لا تشمل أرباح المراكز المفتوحة.</small></article>
@@ -739,7 +748,84 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
  }
  async function update(){try{const r=await fetch('/api/binance-ban-status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();until=Number(d.until_ms)||0;reason=d.reason||'';render()}catch(e){msg.textContent='تعذر قراءة حالة الحظر حاليًا'}}
  update();render();setInterval(render,1000);setInterval(update,15000);
-})();</script></html>'''
+})();</script><script>
+(function(){
+  const prices=new Map();
+  const symbols=['btcusdt','ethusdt','bnbusdt','solusdt','xrpusdt'];
+  const saved={{ positions|default([],true)|tojson }};
+  const rawBalance={{ balance|default('غير متاح')|tojson }};
+  const wallet=Number(String(rawBalance).split(' ')[0]);
+  const status=document.getElementById('v36-ws-status');
+  if(!status)return;
+  const body=document.getElementById('v36-live-market');
+  const posBody=document.getElementById('v36-live-positions');
+  const posStatus=document.getElementById('v36-position-status');
+  const equity=document.getElementById('v36-equity');
+  const fmt=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:6});
+  let ws=null,retry=0,stopped=false,lastEvent=0;
+  const formatTime=t=>new Date(t).toLocaleTimeString('ar-KW',{timeZone:'Asia/Kuwait'});
+  const allSymbols=[...new Set([...symbols,...saved.map(p=>String(p.symbol||'').toLowerCase())])]
+    .filter(x=>/^[a-z0-9]{3,25}$/.test(x));
+  function paint(){
+    const now=Date.now();
+    const fresh=now-lastEvent<12000;
+    if(!fresh){status.textContent='⚠️ البث المباشر غير متصل أو متأخر — لا تعتمد على الأسعار القديمة';}
+    body.replaceChildren();
+    for(const sym of allSymbols){
+      const d=prices.get(sym);const tr=document.createElement('tr');
+      for(const value of [sym.toUpperCase(),fresh&&d?fmt(d.price):'—',fresh&&d?formatTime(d.time):'—']){
+        const td=document.createElement('td');td.textContent=value;tr.appendChild(td);
+      }body.appendChild(tr);
+    }
+    posBody.replaceChildren();let total=0,complete=fresh&&saved.length>0;
+    for(const p of saved){
+      const sym=String(p.symbol||'').toLowerCase(),d=prices.get(sym);
+      const amount=Number(p.positionAmt),entry=Number(p.entryPrice);
+      const valid=fresh&&d&&Number.isFinite(amount)&&Number.isFinite(entry)&&entry>0;
+      const pnl=valid?amount*(d.price-entry):null;
+      if(valid)total+=pnl;else complete=false;
+      const tr=document.createElement('tr');
+      for(const value of [sym.toUpperCase(),p.positionAmt,p.entryPrice,valid?fmt(d.price):'—',valid?fmt(pnl)+' USDT':'غير متاح']){
+        const td=document.createElement('td');td.textContent=String(value);tr.appendChild(td);
+      }posBody.appendChild(tr);
+    }
+    posStatus.textContent=!saved.length?'لا توجد مراكز محفوظة؛ حدّث لقطة الحساب لعرض مراكزك.':
+      complete?'🟢 الربح والخسارة يتغيران مع السعر، لكن بيانات المراكز محفوظة وقديمة':'⚠️ تقدير المراكز غير مكتمل أو البث منقطع';
+    equity.textContent=complete&&Number.isFinite(wallet)?
+      'القيمة التقديرية (رصيد المحفظة المحفوظ + PnL المراكز المحفوظة): '+fmt(wallet+total)+' USDT — ليست رصيدًا مباشرًا مؤكدًا':
+      'رصيد المحفظة المؤكد يبقى آخر لقطة محفوظة؛ لا يمكن حساب القيمة الحالية بثقة.';
+  }
+  function connect(){
+    if(stopped||document.hidden)return;
+    const streams=allSymbols.map(s=>s+'@markPrice@1s').join('/');
+    if(!streams)return;
+    ws=new WebSocket('wss://fstream.binance.com/stream?streams='+streams);
+    ws.onopen=()=>{retry=0;status.textContent='🟢 متصل ببث Binance Futures — بانتظار الأسعار';};
+    ws.onmessage=event=>{
+      try{const msg=JSON.parse(event.data),p=msg.data||msg;
+        if(p.e!=='markPriceUpdate'||!p.s)return;
+        const price=Number(p.p);if(!Number.isFinite(price)||price<=0)return;
+        prices.set(p.s.toLowerCase(),{price,time:Number(p.E)||Date.now()});
+        lastEvent=Date.now();status.textContent='🟢 الأسعار مباشرة — آخر تحديث '+formatTime(lastEvent);
+        paint();
+      }catch(e){}
+    };
+    ws.onerror=()=>{status.textContent='⚠️ تعذر الاتصال ببث Binance';};
+    ws.onclose=()=>{
+      if(stopped)return;
+      status.textContent='⚠️ انقطع بث Binance — إعادة اتصال تدريجية';
+      const delay=Math.min(60000,2000*Math.pow(2,Math.min(retry++,5)));
+      setTimeout(()=>{if(!document.hidden)connect();},delay);
+    };
+  }
+  document.addEventListener('visibilitychange',()=>{
+    if(document.hidden){if(ws){ws.onclose=null;ws.close();ws=null;}lastEvent=0;paint();}
+    else if(!ws||ws.readyState===WebSocket.CLOSED)connect();
+  });
+  window.addEventListener('pagehide',()=>{stopped=true;if(ws){ws.onclose=null;ws.close();}});
+  setInterval(paint,3000);paint();connect();
+})();
+</script></html>'''
 
 # Public market data, cached to protect the exchange from one request per viewer per second.
 _price_lock=threading.Lock()
