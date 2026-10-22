@@ -1,7 +1,7 @@
 """Alkuwaiti Bot - human approved USDT-M futures execution.
 Requires explicit LIVE_TRADING_ENABLED=true. Test with Binance testnet first.
 """
-import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl
+import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from datetime import timedelta
@@ -81,17 +81,111 @@ def allowed_leverage(symbol, requested):
     cap=max(int(x['initialLeverage']) for x in item['brackets'])
     return max(1,min(int(requested),cap,150))
 
+# Binance 418/-1003 cooldown. Shared across Render workers via Neon.
+# Countdown is based on Binance's "banned until" epoch (milliseconds), NOT an estimate.
+_ban_lock=threading.RLock()
+_ban_until_ms=0
+_ban_reason=''
+_last_shared_check=0.0
+_public_cache={}
+_public_cache_lock=threading.RLock()
+
+def _ban_table():
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS bot_binance_cooldown
+                     (id INTEGER PRIMARY KEY CHECK(id=1), until_ms BIGINT NOT NULL DEFAULT 0,
+                      reason TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        c.execute("INSERT INTO bot_binance_cooldown(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
+
+def _cooldown_state(force=False):
+    global _ban_until_ms,_ban_reason,_last_shared_check
+    now=time.time()
+    with _ban_lock:
+        if force or now-_last_shared_check>=10:
+            _last_shared_check=now
+            try:
+                _ban_table()
+                with db() as conn,conn.cursor() as c:
+                    c.execute('SELECT until_ms,reason FROM bot_binance_cooldown WHERE id=1')
+                    row=c.fetchone()
+                if row and int(row[0])>_ban_until_ms:
+                    _ban_until_ms=int(row[0]);_ban_reason=row[1]
+            except Exception:
+                logging.exception('Could not sync Binance cooldown from database')
+        return {'until_ms':_ban_until_ms,'reason':_ban_reason,
+                'remaining_seconds':max(0,(_ban_until_ms-int(now*1000)+999)//1000),
+                'checked_at':datetime.now(timezone.utc).isoformat()}
+
+def _record_limit(response):
+    global _ban_until_ms,_ban_reason
+    if response.status_code not in (418,429): return
+    body=response.text[:700]
+    now_ms=int(time.time()*1000)
+    match=re.search(r'banned\s+until\s+(\d{13})',body,re.IGNORECASE)
+    if not match:
+        match=re.search(r'\b(1[6-9]\d{11}|2\d{12})\b',body) if response.status_code==418 else None
+    if match:
+        until=int(match.group(1))
+        reason='حظر IP من Binance (418)'
+    else:
+        try: wait=min(86400,max(60,int(float(response.headers.get('Retry-After','120')))))
+        except (ValueError,TypeError): wait=120
+        if response.status_code==418: wait=max(wait,900)
+        until=now_ms+wait*1000
+        reason='حظر Binance؛ مدة انتظار احتياطية وليست وقت رفع الحظر المؤكد' if response.status_code==418 else 'تقييد طلبات Binance (429)'
+    with _ban_lock:
+        if until>_ban_until_ms:
+            _ban_until_ms=until;_ban_reason=reason
+        try:
+            _ban_table()
+            with db() as conn,conn.cursor() as c:
+                c.execute("""UPDATE bot_binance_cooldown SET until_ms=GREATEST(until_ms,%s),
+                             reason=CASE WHEN %s>=until_ms THEN %s ELSE reason END,
+                             updated_at=NOW() WHERE id=1""",(until,until,reason))
+        except Exception:
+            logging.exception('Could not persist Binance cooldown')
+    logging.warning('Binance throttled requests: %s; cooldown until %s',response.status_code,until)
+
+def _assert_binance_available():
+    state=_cooldown_state()
+    if state['remaining_seconds']>0:
+        raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية. أوقفنا طلبات Binance حتى انتهاء المهلة.')
+
 def signed(method,path,params=None):
+    _assert_binance_available()
     KEY,SECRET=credentials()
     if not KEY or not SECRET: raise ValueError('مفاتيح Binance غير موجودة في Render')
-    p=dict(params or {}); p['timestamp']=int(time.time()*1000); p['recvWindow']=5000
-    q=urlencode(p); sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
+    p=dict(params or {});p['timestamp']=int(time.time()*1000);p['recvWindow']=5000
+    q=urlencode(p);sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
     r=requests.request(method,BASE+path,params=q+'&signature='+sig,headers={'X-MBX-APIKEY':KEY},timeout=15)
-    if not r.ok: raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
+    _record_limit(r)
+    if not r.ok:
+        if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر في لوحة المسؤول')
+        raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
     return r.json()
 
 def public(path,p=None):
-    r=requests.get(BASE+path,params=p,timeout=12); r.raise_for_status(); return r.json()
+    _assert_binance_available()
+    # Exchange metadata and closed candles do not need re-fetching every scan.
+    key=(path,tuple(sorted((str(k),str(v)) for k,v in (p or {}).items())))
+    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (60 if path=='/fapi/v1/klines' else 3)
+    with _public_cache_lock:
+        item=_public_cache.get(key)
+        if item and time.monotonic()-item[0]<ttl:return item[1]
+    r=requests.get(BASE+path,params=p,timeout=12)
+    _record_limit(r)
+    if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر')
+    r.raise_for_status()
+    data=r.json()
+    with _public_cache_lock:
+        if len(_public_cache)>200:_public_cache.clear()
+        _public_cache[key]=(time.monotonic(),data)
+    return data
+
+@app.route('/api/binance-ban-status')
+@auth
+def binance_ban_status():
+    return _cooldown_state(force=True)
 
 def auth(f):
     @wraps(f)
@@ -364,6 +458,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
 })();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل' if live else '🔒 التداول الحقيقي معطل — وضع التحليل فقط'}}</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
+{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance / حظر IP</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p><small>العداد يستند إلى تاريخ انتهاء الحظر الذي ترسله Binance عند توفره. لا يعني انتهاء العداد أن الاتصال عاد مؤكدًا. يتوقف إرسال طلبات Binance أثناء الحظر.</small></article>{% endif %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a></p>
 <article><h2>🛡️ إدارة البوت الكويتي</h2><p><small>روابط الإدارة الخاصة بك — لا تظهر للمستثمرين.</small></p>
@@ -480,7 +575,18 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
  refreshMarket();refreshPnL();setInterval(refreshMarket,1000);setInterval(refreshPnL,60000);
  refresh();trigger();setInterval(refresh,1000);setInterval(trigger,5000);
 })();
-</script></html>'''
+</script><script>(function(){
+ let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
+ if(!msg||!timer)return;
+ function render(){if(!until){timer.textContent='لا يوجد حظر مسجل';msg.textContent='آخر حالة محفوظة: لا يوجد حظر نشط معروف.';return}
+ const seconds=Math.max(0,Math.ceil((until-Date.now())/1000));
+ const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
+ timer.textContent=seconds?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:'انتهى الوقت المسجل — لم يتم تأكيد رفع الحظر';
+ msg.textContent=reason+(seconds?' | موعد الانتهاء بتوقيت الكويت: '+new Date(until).toLocaleString('ar-KW',{timeZone:'Asia/Kuwait'}):'');
+ }
+ async function update(){try{const r=await fetch('/api/binance-ban-status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();until=Number(d.until_ms)||0;reason=d.reason||'';render()}catch(e){msg.textContent='تعذر قراءة حالة الحظر حاليًا'}}
+ update();render();setInterval(render,1000);setInterval(update,15000);
+})();</script></html>'''
 
 # Public market data, cached to protect the exchange from one request per viewer per second.
 _price_lock=threading.Lock()
@@ -493,6 +599,8 @@ def browser_watch():
     try:
         check_csrf()
         # Cross-process rate limiting: only one browser scan per 60 seconds.
+        if _cooldown_state()['remaining_seconds']>0:
+            return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
         init()
         should_scan=False
         with db() as conn,conn.cursor() as c:
@@ -1052,15 +1160,12 @@ def home():
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
             c.execute("SELECT * FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC");close_suggestions=c.fetchall()
             c.execute('SELECT * FROM bot_scan_status WHERE id=1');scan_state=c.fetchone()
-        filtered=[]
-        for candidate in pending:
-            try:
-                feasibility(candidate['symbol'],D(candidate['entry_reference']),D(candidate['stop_reference']),D(candidate['take_reference']))
-                filtered.append(candidate)
-            except Exception: pass
-        pending=filtered
+        # Display pending opportunities; revalidate risk at approval time.
+        # Never perform one set of Binance account requests per row on page load.
     except Exception as e: flash('Neon: '+str(e)[:160])
-    try: bal=str(wallet())+' USDT';pos=positions()
+    try:
+        _assert_binance_available()
+        bal=str(wallet())+' USDT';pos=positions()
     except Exception as e: flash('Binance: '+str(e)[:160])
     return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences(),close_suggestions=close_suggestions,scan_state=scan_state)
 
@@ -1076,11 +1181,13 @@ def update_api_credentials():
         key=request.form.get('api_key','').strip()
         secret=request.form.get('api_secret','').strip()
         if not key or not secret or len(key)>256 or len(secret)>256: raise ValueError('المفاتيح غير صالحة')
+        _assert_binance_available()
         # Test new credentials without replacing the active ones.
         params={'timestamp':int(time.time()*1000),'recvWindow':5000}
         q=urlencode(params)
         sig=hmac.new(secret.encode(),q.encode(),hashlib.sha256).hexdigest()
         r=requests.get(BASE+'/fapi/v2/account',params=q+'&signature='+sig,headers={'X-MBX-APIKEY':key},timeout=15)
+        _record_limit(r)
         if not r.ok: raise ValueError('فشل اختبار Binance. تحقق من صلاحيات Futures وتقييد IP والبيئة (تجريبي/حقيقي).')
         init()
         with db() as conn,conn.cursor() as c:
