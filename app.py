@@ -377,14 +377,14 @@ def entry_order(row):
 
 
 def auto_scan():
-    """Generate proposals only; never place orders. Globally max once per 60 seconds."""
+    """Generate proposals only; never place orders. Globally max once per 90 seconds."""
     init()
     with db() as conn, conn.cursor() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS bot_scan_gate
                      (id INTEGER PRIMARY KEY CHECK(id=1), started_at TIMESTAMPTZ)''')
         c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
         c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
-                     AND (started_at IS NULL OR started_at<NOW()-INTERVAL '60 seconds') RETURNING id''')
+                     AND (started_at IS NULL OR started_at<NOW()-INTERVAL '90 seconds') RETURNING id''')
         if not c.fetchone(): return {'status':'rate_limited','created':0}
     if _cooldown_state()['remaining_seconds']>0:
         return {'status':'binance_banned','created':0}
@@ -573,7 +573,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يبدأ التحليل بعد'}}</p>
 <p>فرص جديدة في آخر فحص: {{scan_state.opportunities if scan_state else 0}}</p>
 <details><summary>أسباب استبعاد الفرص</summary><small>{{scan_state.reason if scan_state else 'لا توجد بيانات'}}</small></details>
-<div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 60 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
+<div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 90 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
 <article id="exit-suggestions"><h2>🔔 اقتراحات إغلاق بانتظار قرارك</h2>
 <div id="live-exit-rows">جارٍ فحص المراكز...</div>
 <small>الربح تقديري؛ الرسوم الفعلية والتمويل والانزلاق قد تغير النتيجة. يمكنك إغلاق أي مركز يدويًا من جدول المراكز.</small>
@@ -657,7 +657,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
    }catch(e){document.getElementById('daily-pnl').textContent='تعذر قراءة نتائج اليوم من Binance';}
  }
  refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,60000);
- refresh();trigger();setInterval(refresh,10000);setInterval(trigger,60000);
+ refresh();trigger();setInterval(refresh,10000);setInterval(trigger,90000);
 })();
 </script><script>(function(){
  let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
@@ -683,7 +683,7 @@ def browser_watch():
     try:
         check_csrf()
         if is_bot_paused(): return {'status':'paused','scanned':False}
-        # Cross-process rate limiting: only one browser scan per 60 seconds.
+        # Cross-process rate limiting: only one browser scan per 90 seconds.
         if _cooldown_state()['remaining_seconds']>0:
             return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
         init()
@@ -1007,7 +1007,7 @@ OWNER_PAGE="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta nam
 <article><h2>الحد الأدنى للاستثمار: {{settings.minimum_investment_usdt}} USDT</h2><p><small>الحد الأدنى معلومة ظاهرة في المنصة، وليس طلب تحويل أو تفويض لإدارة أموال.</small></p><p>عدد المستثمرين المسجلين: {{count}}</p></article>
 <article><h2>بيانات إيداع رين — محفوظة للإدارة فقط</h2><p><small>لا تعرض للمستثمرين ولا تُستخدم لتحصيل أموال تلقائياً. تأكد من الشبكة والعملة وقواعد رين قبل أي استخدام.</small></p><form method=post action='/owner/rain'><input type=hidden name=csrf value='{{csrf}}'><label>شبكة الإيداع <input name=network value='{{settings.rain_network or ""}}' maxlength=50 placeholder='مثال: شبكة مدعومة فعلاً في رين'></label><label>عنوان الإيداع <input name=address value='{{settings.rain_deposit_address or ""}}' maxlength=256 autocomplete=off placeholder='أدخل العنوان من حساب رين بنفسك'></label><button>حفظ إعدادات رين</button></form></article>
 <article><h2>ملخص السجلات (USDT)</h2><table><tr><th>التصنيف</th><th>الإجمالي المسجل</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>هذه سجلات إدارية غير متحقَّق منها بنظام دفع أو حسابات تداول منفصلة؛ ليست رصيداً أو دخلاً فعلياً مؤكداً. لا يتم تحويل كل 100 دولار تلقائياً.</small></article>
-<article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
+<article><h2>🛡️ دعم المستثمرين</h2><p>افتح حساب المستثمر للمشاهدة أو لتعديل بياناته الإدارية. لا يتم تسجيل الدخول بكلمة مروره، ولا يسمح هذا الوضع بالتداول أو السحب.</p><p><a href='/owner/support'>فتح لوحة دعم المستثمرين</a></p></article><article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
 <article><h2>أحدث سجلات الأموال والأرباح والخسائر</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>التاريخ</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or '—'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>لا تُسجَّل عمليات مالية إلا بعد ربط مصدر موثوق للتحقق. مشاركة الأرباح 50% بند مقترح غير مُفعّل.</small></p></article></main></html>"""
 
 @app.route('/owner/investors')
@@ -1394,3 +1394,71 @@ def close_position(symbol):
     return redirect(url_for('home'))
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5000')))
+
+
+
+# V31: Owner support mode. Never impersonate an investor's authenticated session.
+# Support is a distinct, read-only view, with narrowly scoped audited admin edits.
+def init_owner_support():
+    init_investors()
+    with db() as conn, conn.cursor() as c:
+        c.execute("ALTER TABLE investor_accounts ADD COLUMN IF NOT EXISTS display_name TEXT")
+        c.execute("ALTER TABLE investor_accounts ADD COLUMN IF NOT EXISTS phone TEXT")
+        c.execute("ALTER TABLE investor_accounts ADD COLUMN IF NOT EXISTS bot_paused BOOLEAN NOT NULL DEFAULT TRUE")
+        c.execute("""CREATE TABLE IF NOT EXISTS owner_support_audit (
+            id BIGSERIAL PRIMARY KEY, investor_id BIGINT NOT NULL REFERENCES investor_accounts(id),
+            action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+
+SUPPORT_CSS="""<style>body{font:16px system-ui;background:#101827;color:#f1f5ff;padding:16px}main{max-width:1050px;margin:auto}article{background:#203047;border-radius:12px;padding:18px;margin:15px 0;overflow:auto}a{color:#82deff}table{width:100%;border-collapse:collapse}th,td{padding:9px;text-align:right;border-bottom:1px solid #52617a}input,select,button{padding:11px;margin:6px;border-radius:8px;font:inherit;max-width:95%}button{background:#39c2a2;border:0}label{display:block}small{color:#cbd5e1}</style>"""
+
+@app.route('/owner/support')
+@auth
+def owner_support_list():
+    init_owner_support()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute("""SELECT id,email,display_name,phone,subscription_status,bot_paused,created_at
+                     FROM investor_accounts ORDER BY id DESC LIMIT 300""")
+        users=c.fetchall()
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>🛡️ دعم المستثمرين — حساب المدير</h1><p><a href='/owner/investors'>العودة للمالك</a></p><article><p>هذا الوضع لا يدخل بجلسة المستثمر ولا يسمح بفتح أو إغلاق صفقات أو سحب أموال.</p><table><tr><th>الاسم</th><th>البريد</th><th>الهاتف</th><th>الاشتراك</th><th>البوت</th><th>الإجراء</th></tr>{% for u in users %}<tr><td>{{u.display_name or '—'}}</td><td>{{u.email}}</td><td>{{u.phone or '—'}}</td><td>{{u.subscription_status}}</td><td>{{'متوقف' if u.bot_paused else 'مسموح إدارياً'}}</td><td><a href='{{url_for("owner_support_detail",investor_id=u.id)}}'>مشاهدة وتعديل</a></td></tr>{% endfor %}</table></article></main></html>"""
+    return render_template_string(html,users=users)
+
+@app.route('/owner/support/<int:investor_id>')
+@auth
+def owner_support_detail(investor_id):
+    init_owner_support();init_approval_workflow()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute("""SELECT id,email,display_name,phone,subscription_status,trial_end,paid_until,
+                     bot_paused,created_at FROM investor_accounts WHERE id=%s""",(investor_id,))
+        user=c.fetchone()
+        if not user:return 'المستثمر غير موجود',404
+        c.execute("""SELECT id,kind,status,amount_usdt,investment_mode,pooled_amount_usdt,
+                     individual_amount_usdt,created_at FROM investor_requests
+                     WHERE investor_id=%s ORDER BY id DESC LIMIT 40""",(investor_id,))
+        requests_rows=c.fetchall()
+        c.execute("""SELECT action,detail,created_at FROM owner_support_audit
+                     WHERE investor_id=%s ORDER BY id DESC LIMIT 30""",(investor_id,))
+        audit=c.fetchall()
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>🛡️ وضع دعم المستثمر #{{u.id}}</h1><p><a href='/owner/support'>العودة إلى قائمة المستثمرين</a> | <a href='/owner/investors'>لوحة المالك</a></p>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>وضع المشاهدة</h2><p>البريد: {{u.email}} — الاسم: {{u.display_name or '—'}} — الهاتف: {{u.phone or '—'}}</p><p>الاشتراك: {{u.subscription_status}} | نهاية التجربة: {{u.trial_end}} | نهاية المدفوع: {{u.paid_until or '—'}}</p><p><small>البيانات المالية أدناه طلبات وتصريحات وليست أرصدة Binance مؤكدة. لا تظهر كلمات المرور أو مفاتيح API.</small></p><h3>طلبات المستثمر</h3><table><tr><th>النوع</th><th>النظام</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th></tr>{% for r in reqs %}<tr><td>{{r.kind}}</td><td>{{r.investment_mode or '—'}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{r.status}}</td><td>{{r.created_at}}</td></tr>{% else %}<tr><td colspan=5>لا توجد طلبات</td></tr>{% endfor %}</table></article><article><h2>وضع التعديل الإداري</h2><form method=post action='{{url_for("owner_support_update",investor_id=u.id)}}'><input type=hidden name=csrf value='{{csrf}}'><label>الاسم <input name=display_name maxlength=120 value='{{u.display_name or ""}}'></label><label>الهاتف <input name=phone maxlength=30 value='{{u.phone or ""}}'></label><label>حالة الاشتراك <select name=subscription_status>{% for state in ['TRIAL','ACTIVE','EXPIRED','SUSPENDED'] %}<option value='{{state}}' {% if u.subscription_status==state %}selected{% endif %}>{{state}}</option>{% endfor %}</select></label><label>إعداد المستثمر: <select name=bot_paused><option value=1 {% if u.bot_paused %}selected{% endif %}>إيقاف بوت المستثمر</option><option value=0 {% if not u.bot_paused %}selected{% endif %}>السماح إداريًا (لا يفعل التداول)</option></select></label><button type=submit>حفظ التعديل وتسجيله</button></form><small>تغيير الاشتراك لا يثبت دفعًا أو يحرك أموالًا. السماح الإداري لا يمنح تفويض تداول.</small></article><article><h2>سجل الإجراءات الإدارية</h2><table><tr><th>الإجراء</th><th>التفاصيل</th><th>الوقت</th></tr>{% for a in audit %}<tr><td>{{a.action}}</td><td>{{a.detail}}</td><td>{{a.created_at}}</td></tr>{% else %}<tr><td colspan=3>لا يوجد سجل بعد</td></tr>{% endfor %}</table></article></main></html>"""
+    return render_template_string(html,u=user,reqs=requests_rows,audit=audit,csrf=csrf())
+
+@app.route('/owner/support/<int:investor_id>/update',methods=['POST'])
+@auth
+def owner_support_update(investor_id):
+    check_csrf();init_owner_support()
+    name=request.form.get('display_name','').strip()[:120]
+    phone=request.form.get('phone','').strip()[:30]
+    status=request.form.get('subscription_status','')
+    paused=request.form.get('bot_paused','')
+    if status not in ('TRIAL','ACTIVE','EXPIRED','SUSPENDED') or paused not in ('0','1'):
+        return 'إعداد غير صالح',400
+    if phone and not re.fullmatch(r'[+0-9() .-]{5,30}',phone):return 'رقم هاتف غير صالح',400
+    with db() as conn,conn.cursor() as c:
+        c.execute('SELECT display_name,phone,subscription_status,bot_paused FROM investor_accounts WHERE id=%s FOR UPDATE',(investor_id,))
+        old=c.fetchone()
+        if old is None:return 'المستثمر غير موجود',404
+        c.execute('UPDATE investor_accounts SET display_name=%s,phone=%s,subscription_status=%s,bot_paused=%s WHERE id=%s',(name or None,phone or None,status,paused=='1',investor_id))
+        detail=f'status:{old[2]}->{status}; paused:{old[3]}->{paused}; profile_changed:{old[0]!=name or old[1]!=phone}'
+        c.execute('INSERT INTO owner_support_audit(investor_id,action,detail) VALUES(%s,%s,%s)',(investor_id,'ADMIN_PROFILE_UPDATE',detail))
+    flash('تم حفظ التعديل وتسجيله في سجل الإدارة')
+    return redirect(url_for('owner_support_detail',investor_id=investor_id))
