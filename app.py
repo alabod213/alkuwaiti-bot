@@ -4,6 +4,7 @@ Requires explicit LIVE_TRADING_ENABLED=true. Test with Binance testnet first.
 import os, time, hmac, hashlib, secrets, logging
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
+from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlencode
 import requests, psycopg2
@@ -48,6 +49,16 @@ def init():
             updated_at TIMESTAMPTZ DEFAULT NOW())''')
         c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_api_credentials (id INTEGER PRIMARY KEY CHECK (id=1), api_key_cipher BYTEA NOT NULL, api_secret_cipher BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
+        c.execute('''CREATE TABLE IF NOT EXISTS bot_close_suggestions (
+            symbol TEXT PRIMARY KEY, position_amt NUMERIC NOT NULL,
+            estimated_net_roi NUMERIC NOT NULL, estimated_net_usdt NUMERIC NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            status TEXT NOT NULL DEFAULT 'PENDING')''')
+        c.execute('''CREATE TABLE IF NOT EXISTS bot_scan_status (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            checked_at TIMESTAMPTZ, opportunities INTEGER DEFAULT 0,
+            reason TEXT)''')
+        c.execute("INSERT INTO bot_scan_status(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
         c.execute('''CREATE TABLE IF NOT EXISTS bot_orders_v2 (
             id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, direction TEXT NOT NULL,
             entry_reference NUMERIC NOT NULL, stop_reference NUMERIC NOT NULL,
@@ -218,6 +229,104 @@ def entry_order(row):
         raise ValueError('فشل إنشاء وقف الخسارة؛ أرسلنا أمر إغلاق طارئ. تحقق من Binance: '+str(stop_error)[:90])
     return order,protect,qty
 
+
+def auto_scan():
+    """Called only by a scheduler using a private token; no orders are sent."""
+    init()
+    created=0
+    rejected={}
+    with db() as conn,conn.cursor() as c:
+        c.execute("SELECT pg_try_advisory_lock(68210314)")
+        locked=c.fetchone()[0]
+        if not locked:
+            return {'status':'busy','created':0}
+        try:
+            c.execute("UPDATE bot_orders_v2 SET status='EXPIRED' WHERE status='PENDING' AND created_at<NOW()-INTERVAL '15 minutes'")
+            c.execute("DELETE FROM bot_close_suggestions WHERE created_at<NOW()-INTERVAL '10 minutes' OR status!='PENDING'")
+            for sym in SYMBOLS:
+                try:
+                    info=symbol_info(sym)
+                    signal=proposal(sym)
+                    if not signal:
+                        rejected[sym]='لا توجد إشارة'
+                        continue
+                    direction,entry,stop,take=signal
+                    feasibility(sym,entry,stop,take,info)
+                    c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
+                    if c.fetchone():
+                        rejected[sym]='فرصة أو مركز سابق قيد المتابعة'
+                        continue
+                    c.execute("INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference) VALUES(%s,%s,%s,%s,%s)",(sym,direction,entry,stop,take))
+                    created+=1
+                except Exception as e:
+                    rejected[sym]=str(e)[:110]
+            # Approximate P&L after round-trip fees, using current mark and initial margin.
+            # This is a suggestion only, never an automated close.
+            try:
+                prefs=preferences()
+                threshold=D(str(prefs['target_roi_pct']))/100
+                for p in positions():
+                    symbol=p['symbol']
+                    if symbol not in SYMBOLS: continue
+                    amount=D(p['positionAmt'])
+                    mark=D(p['markPrice'])
+                    entry=D(p['entryPrice'])
+                    lev=D(str(p.get('leverage','1')))
+                    if entry<=0 or mark<=0 or amount==0 or lev<=0: continue
+                    gross=(mark-entry)/entry if amount>0 else (entry-mark)/entry
+                    roi=(gross-ESTIMATED_ROUND_TRIP_COST)*lev
+                    est_usdt=abs(amount)*(mark-entry)*(1 if amount>0 else -1)-abs(amount)*mark*ESTIMATED_ROUND_TRIP_COST
+                    if roi>=threshold and est_usdt>0:
+                        c.execute("""INSERT INTO bot_close_suggestions(symbol,position_amt,estimated_net_roi,estimated_net_usdt,created_at,status)
+                          VALUES(%s,%s,%s,%s,NOW(),'PENDING')
+                          ON CONFLICT(symbol) DO UPDATE SET position_amt=EXCLUDED.position_amt,
+                          estimated_net_roi=EXCLUDED.estimated_net_roi,estimated_net_usdt=EXCLUDED.estimated_net_usdt,
+                          created_at=NOW(),status=CASE WHEN bot_close_suggestions.status='REJECTED' AND bot_close_suggestions.created_at>NOW()-INTERVAL '10 minutes' THEN 'REJECTED' ELSE 'PENDING' END""",(symbol,amount,roi,est_usdt))
+            except Exception as e:
+                rejected['CLOSE_CHECK']=str(e)[:110]
+            c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(created,str(rejected)[:1800]))
+            return {'status':'ok','created':created,'excluded':len(rejected)}
+        finally:
+            c.execute("SELECT pg_advisory_unlock(68210314)")
+
+@app.route('/tasks/scan',methods=['POST'])
+def scheduled_scan():
+    expected=os.environ.get('SCAN_CRON_TOKEN','')
+    provided=request.headers.get('X-Scan-Token','')
+    if not expected or not hmac.compare_digest(expected,provided):
+        return {'error':'unauthorized'},401
+    try:
+        return auto_scan()
+    except Exception:
+        logging.exception('Scheduled scan failed')
+        return {'error':'scan failed'},500
+
+@app.route('/close-suggestions/<symbol>/reject',methods=['POST'])
+@auth
+def reject_close_suggestion(symbol):
+    try:
+        check_csrf()
+        with db() as conn,conn.cursor() as c:
+            c.execute("UPDATE bot_close_suggestions SET status='REJECTED' WHERE symbol=%s AND status='PENDING'",(symbol,))
+        flash('تم رفض اقتراح جني الربح، والمركز لا يزال مفتوحًا.')
+    except Exception as e:
+        flash(str(e)[:160])
+    return redirect(url_for('home'))
+
+@app.route('/close-suggestions/<symbol>/approve',methods=['POST'])
+@auth
+def approve_close_suggestion(symbol):
+    # The existing close handler sends the actual order only if live trading is enabled.
+    try:
+        check_csrf()
+        with db() as conn,conn.cursor() as c:
+            c.execute("SELECT 1 FROM bot_close_suggestions WHERE symbol=%s AND status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes'",(symbol,))
+            if not c.fetchone(): raise ValueError('اقتراح الإغلاق انتهت صلاحيته')
+        return close_position(symbol)
+    except Exception as e:
+        flash(str(e)[:160])
+        return redirect(url_for('home'))
+
 PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي</title><style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-width:850px;margin:auto;padding:16px}article{background:#202d40;padding:16px;border-radius:14px;margin:14px 0;overflow:auto}button,input{font:inherit;padding:10px;border:0;border-radius:8px;margin:4px}button{background:#238657;color:white}button.danger{background:#b64040}a{color:#9fc8ff}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #435069;text-align:right}small{color:#bdc9da}.warn{color:#ffcf83}</style><main><h1>🇰🇼 البوت الكويتي</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل' if live else '🔒 التداول الحقيقي معطل — وضع التحليل فقط'}}</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
@@ -238,6 +347,19 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
 <article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض المحدد وهدف صافي 10% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
 <article><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
+<article><h2>🕒 التحليل التلقائي كل دقيقة</h2>
+<p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يُشغّل المجدول بعد'}}</p>
+<p>فرص جديدة في آخر فحص: {{scan_state.opportunities if scan_state else 0}}</p>
+<details><summary>أسباب استبعاد الفرص</summary><small>{{scan_state.reason if scan_state else 'لا توجد بيانات'}}</small></details>
+<small>يجب إعداد مجدول خارجي يرسل طلب POST كل دقيقة إلى /tasks/scan مع X-Scan-Token. لا تُرسل أوامر تداول أثناء التحليل.</small></article>
+<article><h2>🔔 اقتراحات إغلاق بانتظار قرارك</h2>
+{% for x in close_suggestions %}
+<p><b>{{x.symbol}}</b> | صافي الربح التقديري {{(x.estimated_net_roi*100)|round(2)}}% | {{x.estimated_net_usdt|round(4)}} USDT</p>
+<form method="post" action="{{url_for('approve_close_suggestion',symbol=x.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">موافقة وإغلاق الآن</button></form>
+<form method="post" action="{{url_for('reject_close_suggestion',symbol=x.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>رفض الاقتراح</button></form>
+{% else %}<p>لا توجد اقتراحات إغلاق تحقق الهدف حاليًا.</p>{% endfor %}
+<small>الربح تقديري؛ الرسوم الفعلية والتمويل والانزلاق قد تغير النتيجة. يمكنك إغلاق أي مركز يدويًا من جدول المراكز.</small>
+</article>
 <article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main></html>'''
 
 @app.route('/health')
@@ -261,12 +383,14 @@ def logout(): session.clear(); return redirect(url_for('login'))
 @app.route('/')
 @auth
 def home():
-    pending=[];recent=[]; pos=[];bal='غير متاح'
+    pending=[];recent=[];pos=[];close_suggestions=[];scan_state=None;bal='غير متاح'
     try:
         init()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25");pending=c.fetchall()
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
+            c.execute("SELECT * FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC");close_suggestions=c.fetchall()
+            c.execute('SELECT * FROM bot_scan_status WHERE id=1');scan_state=c.fetchone()
         filtered=[]
         for candidate in pending:
             try:
@@ -277,7 +401,7 @@ def home():
     except Exception as e: flash('Neon: '+str(e)[:160])
     try: bal=str(wallet())+' USDT';pos=positions()
     except Exception as e: flash('Binance: '+str(e)[:160])
-    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences())
+    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences(),close_suggestions=close_suggestions,scan_state=scan_state)
 
 
 @app.route('/settings/api',methods=['POST'])
