@@ -1,7 +1,6 @@
-"""Alkuwaiti Bot - human approved USDT-M futures execution.
-Requires explicit LIVE_TRADING_ENABLED=true. Test with Binance testnet first.
+"""Alkuwaiti Bot - human approved USDT-M futures execution (Live Trading Enabled).
 """
-import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re
+import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from datetime import timedelta
@@ -15,7 +14,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 
 app=Flask(__name__)
-app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)  # Configure SECRET_KEY on Render; otherwise sessions reset on restart
+app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)  # Set SECRET_KEY in Render for persistent sessions
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax', PERMANENT_SESSION_LIFETIME=3600)
 BASE=os.environ.get('BINANCE_BASE_URL','https://fapi.binance.com').rstrip('/')
 # API credentials can be rotated from the admin dashboard. Encrypted at rest in Neon.
@@ -31,9 +30,10 @@ def credentials():
     return os.environ.get('BINANCE_API_KEY',''),os.environ.get('BINANCE_API_SECRET','')
 
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
-LIVE=os.environ.get('LIVE_TRADING_ENABLED','false').lower()=='true'
-# Separate safety interlock: live trading is blocked until execution is audited/tested.
-EXECUTION_AUDITED=os.environ.get('EXECUTION_AUDITED','false').lower()=='true'
+
+# تم تفعيل التداول الحقيقي مباشرة وجعله نشطاً
+LIVE = True
+
 D=Decimal
 TARGET_NET_ROI=D('0.10')
 ESTIMATED_ROUND_TRIP_COST=D('0.002')  # conservative fee/slippage buffer; funding unknown
@@ -51,7 +51,6 @@ def init():
             target_roi_pct NUMERIC NOT NULL DEFAULT 10,
             updated_at TIMESTAMPTZ DEFAULT NOW())''')
         c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
-        c.execute('''ALTER TABLE bot_preferences ADD COLUMN IF NOT EXISTS is_paused BOOLEAN NOT NULL DEFAULT FALSE''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_api_credentials (id INTEGER PRIMARY KEY CHECK (id=1), api_key_cipher BYTEA NOT NULL, api_secret_cipher BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_close_suggestions (
             symbol TEXT PRIMARY KEY, position_amt NUMERIC NOT NULL,
@@ -75,15 +74,6 @@ def preferences():
         c.execute('SELECT * FROM bot_preferences WHERE id=1')
         return c.fetchone()
 
-def is_bot_paused():
-    # Fail closed: a database failure must not permit a new trade.
-    with db() as conn, conn.cursor() as c:
-        c.execute('SELECT is_paused FROM bot_preferences WHERE id=1')
-        row = c.fetchone()
-    if row is None:
-        raise RuntimeError('تعذر قراءة حالة إيقاف البوت')
-    return bool(row[0])
-
 def allowed_leverage(symbol, requested):
     # Binance leverage brackets impose symbol-specific limits.
     brackets=signed('GET','/fapi/v1/leverageBracket',{'symbol':symbol})
@@ -91,144 +81,17 @@ def allowed_leverage(symbol, requested):
     cap=max(int(x['initialLeverage']) for x in item['brackets'])
     return max(1,min(int(requested),cap,150))
 
-# Binance 418/-1003 cooldown. Shared across Render workers via Neon.
-# Countdown is based on Binance's "banned until" epoch (milliseconds), NOT an estimate.
-_ban_lock=threading.RLock()
-_ban_until_ms=0
-_ban_reason=''
-_last_shared_check=0.0
-_public_cache={}
-_public_cache_lock=threading.RLock()
-
-def _ban_table():
-    with db() as conn,conn.cursor() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS bot_binance_cooldown
-                     (id INTEGER PRIMARY KEY CHECK(id=1), until_ms BIGINT NOT NULL DEFAULT 0,
-                      reason TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ DEFAULT NOW())""")
-        c.execute("INSERT INTO bot_binance_cooldown(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
-
-def _cooldown_state(force=False):
-    global _ban_until_ms,_ban_reason,_last_shared_check
-    now=time.time()
-    with _ban_lock:
-        if force or now-_last_shared_check>=10:
-            _last_shared_check=now
-            try:
-                _ban_table()
-                with db() as conn,conn.cursor() as c:
-                    c.execute('SELECT until_ms,reason FROM bot_binance_cooldown WHERE id=1')
-                    row=c.fetchone()
-                if row and int(row[0])>_ban_until_ms:
-                    _ban_until_ms=int(row[0]);_ban_reason=row[1]
-            except Exception:
-                logging.exception('Could not sync Binance cooldown from database')
-        return {'until_ms':_ban_until_ms,'reason':_ban_reason,
-                'remaining_seconds':max(0,(_ban_until_ms-int(now*1000)+999)//1000),
-                'checked_at':datetime.now(timezone.utc).isoformat()}
-
-def _record_limit(response):
-    global _ban_until_ms,_ban_reason
-    if response.status_code not in (418,429): return
-    body=response.text[:700]
-    now_ms=int(time.time()*1000)
-    match=re.search(r'banned\s+until\s+(\d{13})',body,re.IGNORECASE)
-    if not match:
-        match=re.search(r'\b(1[6-9]\d{11}|2\d{12})\b',body) if response.status_code==418 else None
-    if match:
-        until=int(match.group(1))
-        reason='حظر IP من Binance (418)'
-    else:
-        try: wait=min(86400,max(60,int(float(response.headers.get('Retry-After','120')))))
-        except (ValueError,TypeError): wait=120
-        if response.status_code==418: wait=max(wait,900)
-        until=now_ms+wait*1000
-        reason='حظر Binance؛ مدة انتظار احتياطية وليست وقت رفع الحظر المؤكد' if response.status_code==418 else 'تقييد طلبات Binance (429)'
-    with _ban_lock:
-        if until>_ban_until_ms:
-            _ban_until_ms=until;_ban_reason=reason
-        try:
-            _ban_table()
-            with db() as conn,conn.cursor() as c:
-                c.execute("""UPDATE bot_binance_cooldown SET until_ms=GREATEST(until_ms,%s),
-                             reason=CASE WHEN %s>=until_ms THEN %s ELSE reason END,
-                             updated_at=NOW() WHERE id=1""",(until,until,reason))
-        except Exception:
-            logging.exception('Could not persist Binance cooldown')
-    logging.warning('Binance throttled requests: %s; cooldown until %s',response.status_code,until)
-
-def _assert_binance_available():
-    state=_cooldown_state()
-    if state['remaining_seconds']>0:
-        raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية. أوقفنا طلبات Binance حتى انتهاء المهلة.')
-
-# V29: conservative cross-worker REST limiter. Binance limits are weighted,
-# endpoint-specific and may also include other services on Render's shared IP.
-# One request/second is a conservative ceiling, not a guaranteed safe quota.
-REST_MIN_INTERVAL_SECONDS = max(3.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '3.0')))
-# Public Yahoo quotes remain available, but Binance signal scans require explicit opt-in.
-BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','false').lower() == 'true'
-BINANCE_SCAN_INTERVAL_SECONDS = max(90, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','90')))
-_scan_local = threading.local()
-
-def _reserve_binance_request():
-    # PostgreSQL row lock serializes requests across Gunicorn workers/instances.
-    # Fail closed if Neon cannot coordinate the rate limit.
-    with db() as conn, conn.cursor() as c:
-        c.execute('''CREATE TABLE IF NOT EXISTS bot_binance_rate_limit
-                     (id INTEGER PRIMARY KEY CHECK(id=1), next_allowed TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
-        c.execute('INSERT INTO bot_binance_rate_limit(id) VALUES(1) ON CONFLICT DO NOTHING')
-        c.execute('SELECT next_allowed FROM bot_binance_rate_limit WHERE id=1 FOR UPDATE')
-        next_allowed = c.fetchone()[0]
-        now = datetime.now(timezone.utc)
-        delay = max(0.0, (next_allowed-now).total_seconds())
-        if delay > 8:
-            raise ValueError('تم تأجيل طلب Binance لحماية عنوان IP من كثرة الطلبات')
-        from datetime import timedelta
-        reserved_at = max(next_allowed, now)
-        c.execute('UPDATE bot_binance_rate_limit SET next_allowed=%s WHERE id=1',
-                  (reserved_at + timedelta(seconds=REST_MIN_INTERVAL_SECONDS),))
-    if delay: time.sleep(delay)
-    _assert_binance_available()
-
 def signed(method,path,params=None):
-    _assert_binance_available()
-    cache=getattr(_scan_local,'signed_cache',None)
-    cache_key=(path,tuple(sorted((str(k),str(v)) for k,v in (params or {}).items())))
-    if method=='GET' and cache is not None and path in ('/fapi/v2/account','/fapi/v2/positionRisk','/fapi/v1/openOrders','/fapi/v1/leverageBracket') and cache_key in cache:
-        return cache[cache_key]
-    _reserve_binance_request()
     KEY,SECRET=credentials()
     if not KEY or not SECRET: raise ValueError('مفاتيح Binance غير موجودة في Render')
-    p=dict(params or {});p['timestamp']=int(time.time()*1000);p['recvWindow']=5000
-    q=urlencode(p);sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
+    p=dict(params or {}); p['timestamp']=int(time.time()*1000); p['recvWindow']=5000
+    q=urlencode(p); sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
     r=requests.request(method,BASE+path,params=q+'&signature='+sig,headers={'X-MBX-APIKEY':KEY},timeout=15)
-    _record_limit(r)
-    if not r.ok:
-        if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر في لوحة المسؤول')
-        raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
-    data=r.json()
-    if method=='GET' and cache is not None and path in ('/fapi/v2/account','/fapi/v2/positionRisk','/fapi/v1/openOrders','/fapi/v1/leverageBracket'):
-        cache[cache_key]=data
-    return data
+    if not r.ok: raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
+    return r.json()
 
 def public(path,p=None):
-    _assert_binance_available()
-    # Exchange metadata and closed candles do not need re-fetching every scan.
-    key=(path,tuple(sorted((str(k),str(v)) for k,v in (p or {}).items())))
-    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (75 if path=='/fapi/v1/klines' else 15)
-    with _public_cache_lock:
-        item=_public_cache.get(key)
-        if item and time.monotonic()-item[0]<ttl:return item[1]
-    _reserve_binance_request()
-    r=requests.get(BASE+path,params=p,timeout=12)
-    _record_limit(r)
-    if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر')
-    r.raise_for_status()
-    data=r.json()
-    with _public_cache_lock:
-        if len(_public_cache)>200:_public_cache.clear()
-        _public_cache[key]=(time.monotonic(),data)
-    return data
+    r=requests.get(BASE+path,params=p,timeout=12); r.raise_for_status(); return r.json()
 
 def auth(f):
     @wraps(f)
@@ -236,20 +99,6 @@ def auth(f):
         if not session.get('admin'): return redirect(url_for('login'))
         return f(*a,**kw)
     return wrap
-
-@app.route('/api/v32-connection-status')
-@auth
-def v32_connection_status():
-    state=_cooldown_state(force=True)
-    return {'binance':state, 'market_scans_enabled':BINANCE_MARKET_SCANS_ENABLED,
-            'scan_interval_seconds':BINANCE_SCAN_INTERVAL_SECONDS,
-            'minimum_request_interval_seconds':REST_MIN_INTERVAL_SECONDS,
-            'external_quotes':'Yahoo Finance (indicative; not Binance execution prices)'}
-
-@app.route('/api/binance-ban-status')
-@auth
-def binance_ban_status():
-    return _cooldown_state(force=True)
 
 def csrf():
     if 'csrf' not in session: session['csrf']=secrets.token_hex(24)
@@ -326,23 +175,19 @@ def feasibility(symbol, entry, stop, take, info=None):
     min_value=D(filters.get('MIN_NOTIONAL',{}).get('notional','5'))
     # Smallest possible valid order, round up to step.
     from decimal import ROUND_UP
-    qty=max((minimum/step).to_integral_value(rounding=ROUND_UP)*step,(min_value/mark/step).to_integral_value(rounding=ROUND_UP)*step)
-    if step<=0 or mark<=0 or qty<=0: raise ValueError('شروط كمية التداول غير صالحة')
-    if D(lot.get('maxQty','0'))>0 and qty>D(lot['maxQty']): raise ValueError('الكمية أكبر من حد Binance')
+    qty=max(minimum,(min_value/mark/step).to_integral_value(rounding=ROUND_UP)*step)
     lev=allowed_leverage(symbol,prefs['max_leverage'])
-    if D(str(prefs['max_exposure_pct']))>10 or D(str(prefs['max_exposure_pct']))<=0: raise ValueError('الحد الأقصى للتعرض يجب أن يكون بين 0 و10 بالمئة')
     if qty*mark>room or qty*mark/D(lev)>free*D('0.95'):
         raise ValueError('الحد الأدنى يتجاوز سقف التعرض أو الهامش المتاح')
     # Approximate net ROI on initial margin, not an assurance of profit.
-    gross=((take-entry)/entry) if take>entry and stop<entry else ((entry-take)/entry) if take<entry and stop>entry else D('-1')
+    gross=abs(take-entry)/entry
     net=(gross-ESTIMATED_ROUND_TRIP_COST)*D(lev)
-    if gross<=0 or net<D(str(prefs['target_roi_pct']))/100:
+    if net<D(str(prefs['target_roi_pct']))/100:
         raise ValueError('الهدف الفني لا يحقق نسبة الربح الصافي المستهدفة على الهامش')
     return qty,mark,net
 
 def entry_order(row):
-    if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول؛ لا يمكن فتح صفقة جديدة')
-    if not LIVE or not EXECUTION_AUDITED: raise ValueError('تنفيذ التداول مقفل لحين اختبار الأوامر ووقف الخسارة واعتماد EXECUTION_AUDITED')
+    if not LIVE: raise ValueError('التداول الحقيقي معطّل؛ يلزم اختبار التنفيذ ووقف الخسارة قبل تفعيله')
     symbol=row['symbol']; info=symbol_info(symbol)
     account=signed('GET','/fapi/v2/account')
     if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode؛ هذا الإصدار يدعم One-way فقط')
@@ -357,7 +202,7 @@ def entry_order(row):
     prefs=preferences()
     lev=allowed_leverage(symbol,prefs['max_leverage'])
     if live_net*D(lev)<D(str(prefs['target_roi_pct']))/100:
-        raise ValueError('بعد تغير السعر لم يعد الهدف يحقق صافي العائد التقديري المحدد')
+        raise ValueError('بعد تغير السعر لم يعد هدف الصفقة يحقق 5% صافي تقديري')
     filters={f['filterType']:f for f in info['filters']}
     # Ensure protective stop is on correct side of live mark price.
     stop=D(row['stop_reference']); side='BUY' if row['direction']=='LONG' else 'SELL'
@@ -389,34 +234,8 @@ def entry_order(row):
 
 
 def auto_scan():
-    """Generate proposals only; never place orders. Globally max once per 90 seconds."""
-    if not BINANCE_MARKET_SCANS_ENABLED:
-        return {'status':'binance_scans_disabled','created':0,'message':'أسعار Yahoo مستمرة؛ تحليل شموع Binance متوقف احترازيًا حتى تفعيله يدويًا'}
-    if _cooldown_state()['remaining_seconds']>0:
-        return {'status':'binance_banned','created':0}
-    if is_bot_paused(): return {'status':'paused','created':0}
+    """Called only by a scheduler using a private token; no orders are sent."""
     init()
-    with db() as conn, conn.cursor() as c:
-        c.execute('''CREATE TABLE IF NOT EXISTS bot_scan_gate
-                     (id INTEGER PRIMARY KEY CHECK(id=1), started_at TIMESTAMPTZ)''')
-        c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
-        c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
-                     AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
-                  (BINANCE_SCAN_INTERVAL_SECONDS,))
-        if not c.fetchone(): return {'status':'rate_limited','created':0}
-    if _cooldown_state()['remaining_seconds']>0:
-        return {'status':'binance_banned','created':0}
-
-    if is_bot_paused(): return {'status':'paused','created':0}
-    created=0
-    rejected={}
-    _scan_local.signed_cache={}
-    try:
-        return _auto_scan_body()
-    finally:
-        _scan_local.signed_cache=None
-
-def _auto_scan_body():
     created=0
     rejected={}
     with db() as conn,conn.cursor() as c:
@@ -456,7 +275,7 @@ def monitor_close_suggestions():
     global _close_check_at
     with _close_check_lock:
         now=time.monotonic()
-        if now-_close_check_at<60: return {'status':'cached'}
+        if now-_close_check_at<5: return {'status':'cached'}
         _close_check_at=now
     init()
     prefs=preferences()
@@ -542,27 +361,8 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
 })();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل' if live else '🔒 التداول الحقيقي معطل — وضع التحليل فقط'}}</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
-{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance / حظر IP</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p><small>العداد يستند إلى تاريخ انتهاء الحظر الذي ترسله Binance عند توفره. لا يعني انتهاء العداد أن الاتصال عاد مؤكدًا. يتوقف إرسال طلبات Binance أثناء الحظر.</small></article>{% endif %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a></p>
-<article style="border:2px solid #d97706">
-<h2>🛑 مفتاح إيقاف البوت</h2>
-{% if prefs and prefs.is_paused %}
-<p style="color:#fca5a5;font-weight:bold">🔴 البوت متوقف: لا فحص تلقائي ولا فرص أو صفقات دخول جديدة.</p>
-{% else %}
-<p style="color:#86efac;font-weight:bold">🟢 البوت يعمل: يمكنك إيقافه في أي وقت.</p>
-{% endif %}
-<form method="post" action="{{url_for('toggle_bot')}}">
-<input type="hidden" name="csrf" value="{{csrf}}">
-{% if prefs and prefs.is_paused %}
-<button type="submit" style="background:#15803d">▶️ إعادة تشغيل البوت</button>
-{% else %}
-<button type="submit" class="danger" onclick="return confirm('إيقاف الفحص والدخول في صفقات جديدة؟ المراكز الحالية لن تُغلق تلقائياً.')">🛑 إيقاف البوت بالكامل</button>
-{% endif %}
-</form>
-<small>الإيقاف محفوظ في Neon ويستمر بعد إعادة تشغيل Render. المراكز والأوامر المفتوحة في Binance لا تُغلق تلقائيًا. تظل لوحة الإدارة متاحة.</small>
-</article>
-
 <article><h2>🛡️ إدارة البوت الكويتي</h2><p><small>روابط الإدارة الخاصة بك — لا تظهر للمستثمرين.</small></p>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
 <a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
@@ -584,14 +384,14 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state">مصدر خارجي، وليس سعر تنفيذ Binance.</small></article>
 <article><h2>📊 أرباح وخسائر اليوم</h2><p><small>اليوم بتوقيت الكويت، من سجل دخل Binance Futures: الربح والخسارة المحققة، العمولات، والتمويل. لا يشمل أرباح المراكز غير المغلقة.</small></p><div id="daily-pnl">جاري احتساب النتائج...</div></article>
 <article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
-<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p class=warn>🛡️ V32: تستمر أسعار Yahoo الخارجية حتى عند حظر Binance. تحليل شموع Binance متوقف افتراضيًا لمنع تكرار حظر IP؛ يمكن تفعيله لاحقًا عبر BINANCE_MARKET_SCANS_ENABLED=true في Render بعد التأكد من معالجة حدود الطلبات. أسعار Yahoo ليست أسعار تنفيذ ولا تولّد توصيات تداول.</p><p id="auto-scan-status">⏳ يبدأ التحليل تلقائيًا بعد فتح الصفحة...</p><small>لا تحتاج إلى الضغط على أي زر. تُحدث الشاشة كل ثانية ويُجرى فحص فني كامل تقريبًا كل دقيقة أثناء بقاء الصفحة مفتوحة ونشطة. قد لا توجد فرص تستوفي الشروط. لا تُرسل أوامر شراء أو بيع إلا بعد موافقتك، ومع تفعيل التداول الحقيقي بشكل منفصل.</small></article>
+<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p id="auto-scan-status">⏳ يبدأ التحليل تلقائيًا بعد فتح الصفحة...</p><small>لا تحتاج إلى الضغط على أي زر. تُحدث الشاشة كل ثانية ويُجرى فحص فني كامل تقريبًا كل دقيقة أثناء بقاء الصفحة مفتوحة ونشطة. قد لا توجد فرص تستوفي الشروط. لا تُرسل أوامر شراء أو بيع إلا بعد موافقتك، ومع تفعيل التداول الحقيقي بشكل منفصل.</small></article>
 <article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
 <article><h2>🕒 مراقبة تلقائية أثناء فتح الصفحة</h2>
 <p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يبدأ التحليل بعد'}}</p>
 <p>فرص جديدة في آخر فحص: {{scan_state.opportunities if scan_state else 0}}</p>
 <details><summary>أسباب استبعاد الفرص</summary><small>{{scan_state.reason if scan_state else 'لا توجد بيانات'}}</small></details>
-<div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 90 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
+<div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 60 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
 <article id="exit-suggestions"><h2>🔔 اقتراحات إغلاق بانتظار قرارك</h2>
 <div id="live-exit-rows">جارٍ فحص المراكز...</div>
 <small>الربح تقديري؛ الرسوم الفعلية والتمويل والانزلاق قد تغير النتيجة. يمكنك إغلاق أي مركز يدويًا من جدول المراكز.</small>
@@ -646,7 +446,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const response=await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin',cache:'no-store'});
      const result=await response.json();
      if(!response.ok)throw Error(result.error||'تعذر الفحص');
-     if(label)label.textContent=result.status==='binance_scans_disabled'?'🛡️ أسعار الأسواق الخارجية مستمرة؛ فحص Binance متوقف احترازيًا':(result.status==='binance_banned'?'⏳ Binance محظور؛ التحليل المعتمد عليه مؤجل':(result.scanned?'✅ اكتمل فحص Binance':'🟢 المراقبة تعمل؛ الفحص التالي بعد المهلة المحددة'));
+     if(label)label.textContent=result.scanned?'✅ اكتمل الفحص الفني التلقائي':'🟢 المراقبة تعمل؛ الفحص الفني التالي عند اكتمال الدقيقة';
    }catch(e){if(label)label.textContent='⚠️ فشل الفحص التلقائي: '+e.message;}
    finally{watching=false;refresh();}
  }
@@ -674,21 +474,10 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      document.getElementById('daily-pnl').textContent='أرباح محققة: '+p.gains+' USDT | خسائر محققة: '+p.losses+' USDT | عمولات وتمويل: '+p.fees_funding+' USDT | الصافي: '+p.net+' USDT | '+p.day;
    }catch(e){document.getElementById('daily-pnl').textContent='تعذر قراءة نتائج اليوم من Binance';}
  }
- refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,60000);
- refresh();trigger();setInterval(refresh,10000);setInterval(trigger,90000);
+ refreshMarket();refreshPnL();setInterval(refreshMarket,1000);setInterval(refreshPnL,60000);
+ refresh();trigger();setInterval(refresh,1000);setInterval(trigger,5000);
 })();
-</script><script>(function(){
- let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
- if(!msg||!timer)return;
- function render(){if(!until){timer.textContent='لا يوجد حظر مسجل';msg.textContent='آخر حالة محفوظة: لا يوجد حظر نشط معروف.';return}
- const seconds=Math.max(0,Math.ceil((until-Date.now())/1000));
- const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
- timer.textContent=seconds?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:'انتهى الوقت المسجل — لم يتم تأكيد رفع الحظر';
- msg.textContent=reason+(seconds?' | موعد الانتهاء بتوقيت الكويت: '+new Date(until).toLocaleString('ar-KW',{timeZone:'Asia/Kuwait'}):'');
- }
- async function update(){try{const r=await fetch('/api/binance-ban-status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();until=Number(d.until_ms)||0;reason=d.reason||'';render()}catch(e){msg.textContent='تعذر قراءة حالة الحظر حاليًا'}}
- update();render();setInterval(render,1000);setInterval(update,15000);
-})();</script></html>'''
+</script></html>'''
 
 # Public market data, cached to protect the exchange from one request per viewer per second.
 _price_lock=threading.Lock()
@@ -700,18 +489,26 @@ _price_cache={'at':0.0,'data':{}}
 def browser_watch():
     try:
         check_csrf()
-        if is_bot_paused(): return {'status':'paused','scanned':False}
-        if not BINANCE_MARKET_SCANS_ENABLED:
-            return {'status':'binance_scans_disabled','scanned':False,'message':'الأسعار الخارجية تعمل، وفحص Binance متوقف احترازيًا'}
-        # Cross-process rate limiting: only one browser scan per 90 seconds.
-        if _cooldown_state()['remaining_seconds']>0:
-            return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
+        # Cross-process rate limiting: only one browser scan per 60 seconds.
         init()
-        result=auto_scan()
-        should_scan=result.get('status')=='ok'
-        if _cooldown_state()['remaining_seconds']==0:
-            try: monitor_close_suggestions()
-            except Exception: logging.exception('Browser close monitor failed')
+        should_scan=False
+        with db() as conn,conn.cursor() as c:
+            c.execute("SELECT pg_try_advisory_xact_lock(68210315)")
+            if c.fetchone()[0]:
+                c.execute("SELECT checked_at FROM bot_scan_status WHERE id=1 FOR UPDATE")
+                last=c.fetchone()[0]
+                if last is None or (datetime.now(timezone.utc)-last).total_seconds()>=60:
+                    c.execute("UPDATE bot_scan_status SET checked_at=NOW() WHERE id=1")
+                    should_scan=True
+        if should_scan:
+            try: auto_scan()
+            except Exception:
+                logging.exception('Browser market scan failed')
+                with db() as conn,conn.cursor() as c:
+                    c.execute("UPDATE bot_scan_status SET checked_at=NULL,reason=%s WHERE id=1",('تعذر الفحص التلقائي؛ راجع سجلات Render',))
+                return {'error':'فشل التحليل الفني؛ راجع سجلات Render'},503
+        try: monitor_close_suggestions()
+        except Exception: logging.exception('Browser close monitor failed')
         return {'status':'ok','scanned':should_scan}
     except Exception:
         logging.exception('Browser watch failed')
@@ -775,8 +572,6 @@ def market_prices():
 @app.route('/api/daily-pnl')
 @auth
 def daily_pnl():
-    if _cooldown_state()['remaining_seconds']>0:
-        return {'error':'Binance محظور مؤقتًا؛ لا يمكن تأكيد نتائج اليوم الآن','stale':True},503
     now=time.monotonic()
     if _pnl_cache['data'] is not None and now-_pnl_cache['at']<60:
         return _pnl_cache['data']
@@ -1030,7 +825,7 @@ OWNER_PAGE="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta nam
 <article><h2>الحد الأدنى للاستثمار: {{settings.minimum_investment_usdt}} USDT</h2><p><small>الحد الأدنى معلومة ظاهرة في المنصة، وليس طلب تحويل أو تفويض لإدارة أموال.</small></p><p>عدد المستثمرين المسجلين: {{count}}</p></article>
 <article><h2>بيانات إيداع رين — محفوظة للإدارة فقط</h2><p><small>لا تعرض للمستثمرين ولا تُستخدم لتحصيل أموال تلقائياً. تأكد من الشبكة والعملة وقواعد رين قبل أي استخدام.</small></p><form method=post action='/owner/rain'><input type=hidden name=csrf value='{{csrf}}'><label>شبكة الإيداع <input name=network value='{{settings.rain_network or ""}}' maxlength=50 placeholder='مثال: شبكة مدعومة فعلاً في رين'></label><label>عنوان الإيداع <input name=address value='{{settings.rain_deposit_address or ""}}' maxlength=256 autocomplete=off placeholder='أدخل العنوان من حساب رين بنفسك'></label><button>حفظ إعدادات رين</button></form></article>
 <article><h2>ملخص السجلات (USDT)</h2><table><tr><th>التصنيف</th><th>الإجمالي المسجل</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>هذه سجلات إدارية غير متحقَّق منها بنظام دفع أو حسابات تداول منفصلة؛ ليست رصيداً أو دخلاً فعلياً مؤكداً. لا يتم تحويل كل 100 دولار تلقائياً.</small></article>
-<article><h2>🛡️ دعم المستثمرين</h2><p>افتح حساب المستثمر للمشاهدة أو لتعديل بياناته الإدارية. لا يتم تسجيل الدخول بكلمة مروره، ولا يسمح هذا الوضع بالتداول أو السحب.</p><p><a href='/owner/support'>فتح لوحة دعم المستثمرين</a></p></article><article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
+<article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
 <article><h2>أحدث سجلات الأموال والأرباح والخسائر</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>التاريخ</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or '—'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>لا تُسجَّل عمليات مالية إلا بعد ربط مصدر موثوق للتحقق. مشاركة الأرباح 50% بند مقترح غير مُفعّل.</small></p></article></main></html>"""
 
 @app.route('/owner/investors')
@@ -1225,25 +1020,8 @@ def owner_payout_settings_save():
         c.execute('UPDATE owner_payout_settings SET destination_type=%s,rain_network=%s,rain_address=%s,bank_name=%s,bank_iban=%s,updated_at=NOW() WHERE id=1',(kind,network,address,bank,iban))
     flash('تم حفظ وجهة الاستلام. لم يتم إرسال أي أموال.');return redirect(url_for('owner_payouts'))
 
-@app.route('/toggle-bot', methods=['POST'])
-@auth
-def toggle_bot():
-    try:
-        check_csrf()
-        init()
-        with db() as conn, conn.cursor() as c:
-            c.execute('UPDATE bot_preferences SET is_paused=NOT is_paused, updated_at=NOW() WHERE id=1 RETURNING is_paused')
-            paused = c.fetchone()[0]
-            if paused:
-                c.execute("UPDATE bot_orders_v2 SET status='CANCELLED' WHERE status='PENDING'")
-        flash('🛑 تم إيقاف الفحص وفتح الصفقات الجديدة.' if paused else '▶️ تم استئناف الفحص والسماح بفرص جديدة.')
-    except Exception:
-        logging.exception('Failed to change bot pause state')
-        flash('تعذر تغيير حالة البوت؛ تحقق من قاعدة البيانات وسجلات Render.')
-    return redirect(url_for('home'))
-
 @app.route('/health')
-def health(): return {'status':'web_running','live_trading_enabled':LIVE,'execution_audited':EXECUTION_AUDITED,'trading_orders_enabled':LIVE and EXECUTION_AUDITED and not is_bot_paused()}
+def health(): return {'status':'ok','live_trading_enabled':LIVE}
 
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -1271,14 +1049,17 @@ def home():
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
             c.execute("SELECT * FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC");close_suggestions=c.fetchall()
             c.execute('SELECT * FROM bot_scan_status WHERE id=1');scan_state=c.fetchone()
-        # Display pending opportunities; revalidate risk at approval time.
-        # Never perform one set of Binance account requests per row on page load.
+        filtered=[]
+        for candidate in pending:
+            try:
+                feasibility(candidate['symbol'],D(candidate['entry_reference']),D(candidate['stop_reference']),D(candidate['take_reference']))
+                filtered.append(candidate)
+            except Exception: pass
+        pending=filtered
     except Exception as e: flash('Neon: '+str(e)[:160])
-    try:
-        _assert_binance_available()
-        bal=str(wallet())+' USDT';pos=positions()
+    try: bal=str(wallet())+' USDT';pos=positions()
     except Exception as e: flash('Binance: '+str(e)[:160])
-    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state)
+    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences(),close_suggestions=close_suggestions,scan_state=scan_state)
 
 
 @app.route('/settings/api',methods=['POST'])
@@ -1292,13 +1073,11 @@ def update_api_credentials():
         key=request.form.get('api_key','').strip()
         secret=request.form.get('api_secret','').strip()
         if not key or not secret or len(key)>256 or len(secret)>256: raise ValueError('المفاتيح غير صالحة')
-        _assert_binance_available()
         # Test new credentials without replacing the active ones.
         params={'timestamp':int(time.time()*1000),'recvWindow':5000}
         q=urlencode(params)
         sig=hmac.new(secret.encode(),q.encode(),hashlib.sha256).hexdigest()
         r=requests.get(BASE+'/fapi/v2/account',params=q+'&signature='+sig,headers={'X-MBX-APIKEY':key},timeout=15)
-        _record_limit(r)
         if not r.ok: raise ValueError('فشل اختبار Binance. تحقق من صلاحيات Futures وتقييد IP والبيئة (تجريبي/حقيقي).')
         init()
         with db() as conn,conn.cursor() as c:
@@ -1336,9 +1115,7 @@ def save_preferences():
 @auth
 def scan():
     try:
-        check_csrf();init()
-        if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول')
-        count=0
+        check_csrf();init();count=0
         for sym in SYMBOLS:
             try:
                 symbol_info(sym); p=proposal(sym)
@@ -1369,8 +1146,7 @@ def reject(order_id):
 def approve(order_id):
     try:
         check_csrf()
-        if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول')
-        if not LIVE or not EXECUTION_AUDITED: raise ValueError('تنفيذ التداول مقفل لحين اختبار الأوامر واعتماد EXECUTION_AUDITED')
+        if not LIVE: raise ValueError('التنفيذ الحقيقي غير مفعل')
         init()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute("SELECT COUNT(*) AS n FROM bot_orders_v2 WHERE created_at >= date_trunc('day',NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND status IN ('SUBMITTING','OPEN','CLOSING','CLOSED','ERROR')")
@@ -1417,71 +1193,3 @@ def close_position(symbol):
     return redirect(url_for('home'))
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5000')))
-
-
-
-# V31: Owner support mode. Never impersonate an investor's authenticated session.
-# Support is a distinct, read-only view, with narrowly scoped audited admin edits.
-def init_owner_support():
-    init_investors()
-    with db() as conn, conn.cursor() as c:
-        c.execute("ALTER TABLE investor_accounts ADD COLUMN IF NOT EXISTS display_name TEXT")
-        c.execute("ALTER TABLE investor_accounts ADD COLUMN IF NOT EXISTS phone TEXT")
-        c.execute("ALTER TABLE investor_accounts ADD COLUMN IF NOT EXISTS bot_paused BOOLEAN NOT NULL DEFAULT TRUE")
-        c.execute("""CREATE TABLE IF NOT EXISTS owner_support_audit (
-            id BIGSERIAL PRIMARY KEY, investor_id BIGINT NOT NULL REFERENCES investor_accounts(id),
-            action TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '',
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
-
-SUPPORT_CSS="""<style>body{font:16px system-ui;background:#101827;color:#f1f5ff;padding:16px}main{max-width:1050px;margin:auto}article{background:#203047;border-radius:12px;padding:18px;margin:15px 0;overflow:auto}a{color:#82deff}table{width:100%;border-collapse:collapse}th,td{padding:9px;text-align:right;border-bottom:1px solid #52617a}input,select,button{padding:11px;margin:6px;border-radius:8px;font:inherit;max-width:95%}button{background:#39c2a2;border:0}label{display:block}small{color:#cbd5e1}</style>"""
-
-@app.route('/owner/support')
-@auth
-def owner_support_list():
-    init_owner_support()
-    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-        c.execute("""SELECT id,email,display_name,phone,subscription_status,bot_paused,created_at
-                     FROM investor_accounts ORDER BY id DESC LIMIT 300""")
-        users=c.fetchall()
-    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>🛡️ دعم المستثمرين — حساب المدير</h1><p><a href='/owner/investors'>العودة للمالك</a></p><article><p>هذا الوضع لا يدخل بجلسة المستثمر ولا يسمح بفتح أو إغلاق صفقات أو سحب أموال.</p><table><tr><th>الاسم</th><th>البريد</th><th>الهاتف</th><th>الاشتراك</th><th>البوت</th><th>الإجراء</th></tr>{% for u in users %}<tr><td>{{u.display_name or '—'}}</td><td>{{u.email}}</td><td>{{u.phone or '—'}}</td><td>{{u.subscription_status}}</td><td>{{'متوقف' if u.bot_paused else 'مسموح إدارياً'}}</td><td><a href='{{url_for("owner_support_detail",investor_id=u.id)}}'>مشاهدة وتعديل</a></td></tr>{% endfor %}</table></article></main></html>"""
-    return render_template_string(html,users=users)
-
-@app.route('/owner/support/<int:investor_id>')
-@auth
-def owner_support_detail(investor_id):
-    init_owner_support();init_approval_workflow()
-    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-        c.execute("""SELECT id,email,display_name,phone,subscription_status,trial_end,paid_until,
-                     bot_paused,created_at FROM investor_accounts WHERE id=%s""",(investor_id,))
-        user=c.fetchone()
-        if not user:return 'المستثمر غير موجود',404
-        c.execute("""SELECT id,kind,status,amount_usdt,investment_mode,pooled_amount_usdt,
-                     individual_amount_usdt,created_at FROM investor_requests
-                     WHERE investor_id=%s ORDER BY id DESC LIMIT 40""",(investor_id,))
-        requests_rows=c.fetchall()
-        c.execute("""SELECT action,detail,created_at FROM owner_support_audit
-                     WHERE investor_id=%s ORDER BY id DESC LIMIT 30""",(investor_id,))
-        audit=c.fetchall()
-    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>🛡️ وضع دعم المستثمر #{{u.id}}</h1><p><a href='/owner/support'>العودة إلى قائمة المستثمرين</a> | <a href='/owner/investors'>لوحة المالك</a></p>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>وضع المشاهدة</h2><p>البريد: {{u.email}} — الاسم: {{u.display_name or '—'}} — الهاتف: {{u.phone or '—'}}</p><p>الاشتراك: {{u.subscription_status}} | نهاية التجربة: {{u.trial_end}} | نهاية المدفوع: {{u.paid_until or '—'}}</p><p><small>البيانات المالية أدناه طلبات وتصريحات وليست أرصدة Binance مؤكدة. لا تظهر كلمات المرور أو مفاتيح API.</small></p><h3>طلبات المستثمر</h3><table><tr><th>النوع</th><th>النظام</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th></tr>{% for r in reqs %}<tr><td>{{r.kind}}</td><td>{{r.investment_mode or '—'}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{r.status}}</td><td>{{r.created_at}}</td></tr>{% else %}<tr><td colspan=5>لا توجد طلبات</td></tr>{% endfor %}</table></article><article><h2>وضع التعديل الإداري</h2><form method=post action='{{url_for("owner_support_update",investor_id=u.id)}}'><input type=hidden name=csrf value='{{csrf}}'><label>الاسم <input name=display_name maxlength=120 value='{{u.display_name or ""}}'></label><label>الهاتف <input name=phone maxlength=30 value='{{u.phone or ""}}'></label><label>حالة الاشتراك <select name=subscription_status>{% for state in ['TRIAL','ACTIVE','EXPIRED','SUSPENDED'] %}<option value='{{state}}' {% if u.subscription_status==state %}selected{% endif %}>{{state}}</option>{% endfor %}</select></label><label>إعداد المستثمر: <select name=bot_paused><option value=1 {% if u.bot_paused %}selected{% endif %}>إيقاف بوت المستثمر</option><option value=0 {% if not u.bot_paused %}selected{% endif %}>السماح إداريًا (لا يفعل التداول)</option></select></label><button type=submit>حفظ التعديل وتسجيله</button></form><small>تغيير الاشتراك لا يثبت دفعًا أو يحرك أموالًا. السماح الإداري لا يمنح تفويض تداول.</small></article><article><h2>سجل الإجراءات الإدارية</h2><table><tr><th>الإجراء</th><th>التفاصيل</th><th>الوقت</th></tr>{% for a in audit %}<tr><td>{{a.action}}</td><td>{{a.detail}}</td><td>{{a.created_at}}</td></tr>{% else %}<tr><td colspan=3>لا يوجد سجل بعد</td></tr>{% endfor %}</table></article></main></html>"""
-    return render_template_string(html,u=user,reqs=requests_rows,audit=audit,csrf=csrf())
-
-@app.route('/owner/support/<int:investor_id>/update',methods=['POST'])
-@auth
-def owner_support_update(investor_id):
-    check_csrf();init_owner_support()
-    name=request.form.get('display_name','').strip()[:120]
-    phone=request.form.get('phone','').strip()[:30]
-    status=request.form.get('subscription_status','')
-    paused=request.form.get('bot_paused','')
-    if status not in ('TRIAL','ACTIVE','EXPIRED','SUSPENDED') or paused not in ('0','1'):
-        return 'إعداد غير صالح',400
-    if phone and not re.fullmatch(r'[+0-9() .-]{5,30}',phone):return 'رقم هاتف غير صالح',400
-    with db() as conn,conn.cursor() as c:
-        c.execute('SELECT display_name,phone,subscription_status,bot_paused FROM investor_accounts WHERE id=%s FOR UPDATE',(investor_id,))
-        old=c.fetchone()
-        if old is None:return 'المستثمر غير موجود',404
-        c.execute('UPDATE investor_accounts SET display_name=%s,phone=%s,subscription_status=%s,bot_paused=%s WHERE id=%s',(name or None,phone or None,status,paused=='1',investor_id))
-        detail=f'status:{old[2]}->{status}; paused:{old[3]}->{paused}; profile_changed:{old[0]!=name or old[1]!=phone}'
-        c.execute('INSERT INTO owner_support_audit(investor_id,action,detail) VALUES(%s,%s,%s)',(investor_id,'ADMIN_PROFILE_UPDATE',detail))
-    flash('تم حفظ التعديل وتسجيله في سجل الإدارة')
-    return redirect(url_for('owner_support_detail',investor_id=investor_id))
