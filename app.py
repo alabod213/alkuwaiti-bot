@@ -1,16 +1,17 @@
 """Alkuwaiti Bot - human approved USDT-M futures execution.
 Requires explicit LIVE_TRADING_ENABLED=true. Test with Binance testnet first.
 """
-import os, time, hmac, hashlib, secrets, logging, threading
+import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN
 from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlencode
+from email.message import EmailMessage
 import requests, psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, request, session, redirect, url_for, flash, render_template_string
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 
 app=Flask(__name__)
@@ -351,7 +352,9 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
 <button>حفظ إعدادات التحليل</button></form>
 <p class="warn">تحذير: الرافعة 150x قد تؤدي إلى تصفية سريعة وخسارة الهامش. البوت لا يستطيع زيادة رصيد Binance أو ضمان 10% ربح.</p>
 </article>
-<article><h2>📈 أسعار الأسواق — Google</h2><p><strong>تنبيه:</strong> Google Search لا يقدم API رسميًا عامًا لأسعار هذه الأسواق كل ثانية. لذلك لا يعرض البوت أرقامًا مخمّنة أو يوهمك أنها أسعار لحظية. اضغط على السوق لعرض السعر المتاح في Google، وقد يكون متأخرًا أو مختلفًا عن عقد Binance.</p><div id="google-clock">وقت الشاشة: —</div><table><thead><tr><th>السوق</th><th>رمز Binance</th><th>Google</th></tr></thead><tbody><tr><td>بيتكوين</td><td>BTCUSDT</td><td><a href="https://www.google.com/search?q=BTC-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>إيثريوم</td><td>ETHUSDT</td><td><a href="https://www.google.com/search?q=ETH-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>BNB</td><td>BNBUSDT</td><td><a href="https://www.google.com/search?q=BNB-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>سولانا</td><td>SOLUSDT</td><td><a href="https://www.google.com/search?q=SOL-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>XRP</td><td>XRPUSDT</td><td><a href="https://www.google.com/search?q=XRP-USD" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>الذهب</td><td>XAUUSDT</td><td><a href="https://www.google.com/search?q=gold%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>الفضة</td><td>XAGUSDT</td><td><a href="https://www.google.com/search?q=silver%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>نفط WTI</td><td>CLUSDT</td><td><a href="https://www.google.com/search?q=WTI%20crude%20oil%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr><tr><td>نفط برنت</td><td>BZUSDT</td><td><a href="https://www.google.com/search?q=Brent%20crude%20oil%20price" target="_blank" rel="noopener noreferrer">عرض سعر Google ↗</a></td></tr></tbody></table><small>يُحدّث وقت الشاشة كل ثانية فقط؛ الأسعار تُعرض من صفحات Google عند فتحها، وليس عبر تحديث آلي مضمون.</small></article>
+<article><h2>📈 الأسعار داخل البوت</h2><p><small>بيانات Yahoo Finance العامة غير الرسمية، قد تكون متأخرة أو غير متاحة؛ تختلف عن عقود Binance. يتم تحديث الشاشة كل ثانية، وجلب المصدر كل 30 ثانية تقريبًا.</small></p>
+<table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state">مصدر خارجي، وليس سعر تنفيذ Binance.</small></article>
+<article><h2>📊 أرباح وخسائر اليوم</h2><p><small>اليوم بتوقيت الكويت، من سجل دخل Binance Futures: الربح والخسارة المحققة، العمولات، والتمويل. لا يشمل أرباح المراكز غير المغلقة.</small></p><div id="daily-pnl">جاري احتساب النتائج...</div></article>
 <article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
 <article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض المحدد وهدف صافي 10% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
 <article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
@@ -407,6 +410,31 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
    finally{loading=false;}
  }
  async function trigger(){if(watching||document.hidden)return;watching=true;try{await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin'});}catch(e){}finally{watching=false;refresh();}}
+ const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
+ async function refreshMarket(){
+   const tbody=document.getElementById('external-prices');
+   if(!tbody)return;
+   try{
+     const r=await fetch('/api/market-prices',{credentials:'same-origin',cache:'no-store'});
+     if(!r.ok)throw Error('price request');
+     const data=await r.json();tbody.replaceChildren();
+     for(const [name,sym] of symbols){
+       const tr=document.createElement('tr'),item=data.prices[sym];
+       td(tr,name+' '+sym);td(tr,item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح');
+       td(tr,item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—');tbody.appendChild(tr);
+     }
+     document.getElementById('price-state').textContent='آخر تحديث من المصدر: '+(data.checked_at?new Date(data.checked_at).toLocaleTimeString('ar-KW'):'غير متاح')+' | البيانات قد تكون متأخرة';
+   }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار الخارجية مؤقتًا';}
+ }
+ async function refreshPnL(){
+   try{
+     const r=await fetch('/api/daily-pnl',{credentials:'same-origin',cache:'no-store'});
+     if(!r.ok)throw Error('pnl');
+     const p=await r.json();
+     document.getElementById('daily-pnl').textContent='أرباح محققة: '+p.gains+' USDT | خسائر محققة: '+p.losses+' USDT | عمولات وتمويل: '+p.fees_funding+' USDT | الصافي: '+p.net+' USDT | '+p.day;
+   }catch(e){document.getElementById('daily-pnl').textContent='تعذر قراءة نتائج اليوم من Binance';}
+ }
+ refreshMarket();refreshPnL();setInterval(refreshMarket,1000);setInterval(refreshPnL,60000);
  refresh();trigger();setInterval(refresh,1000);setInterval(trigger,5000);
 })();
 </script></html>'''
@@ -462,12 +490,462 @@ def browser_suggestions():
         logging.exception('Suggestions refresh failed')
         return {'error':'تعذر جلب الفرص'},503
 
+# External quotes are indicative Yahoo Finance data (unofficial; may be delayed/blocked).
+YAHOO_TICKERS={'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','BNBUSDT':'BNB-USD','SOLUSDT':'SOL-USD','XRPUSDT':'XRP-USD','XAUUSDT':'GC=F','XAGUSDT':'SI=F','CLUSDT':'CL=F','BZUSDT':'BZ=F'}
+_external_cache={'at':0.0,'checked_at':None,'prices':{}}
+_pnl_cache={'at':0.0,'data':None}
+
+def account_auth(f):
+    @wraps(f)
+    def wrapped(*args,**kwargs):
+        if not (session.get('admin') or session.get('investor_id')):
+            return {'error':'login required'},401
+        return f(*args,**kwargs)
+    return wrapped
+
 @app.route('/api/market-prices')
-@auth
+@account_auth
 def market_prices():
-    # Do not scrape Google or silently substitute Binance prices.
-    return {'prices':{},'source':'Google Search','realtime':False,
-            'message':'لا تتوفر واجهة Google رسمية مضمونة لتحديث الأسعار كل ثانية. استخدم روابط Google في اللوحة.'},200
+    with _price_lock:
+        now=time.monotonic()
+        if now-_external_cache['at']>=30:
+            result={}
+            for symbol,ticker in YAHOO_TICKERS.items():
+                try:
+                    r=requests.get('https://query1.finance.yahoo.com/v8/finance/chart/'+requests.utils.quote(ticker,safe=''),
+                                   params={'interval':'1m','range':'1d'},
+                                   headers={'User-Agent':'Mozilla/5.0 AlkuwaitiBot/1.0'},timeout=3)
+                    r.raise_for_status()
+                    item=r.json()['chart']['result'][0]
+                    price=item['meta'].get('regularMarketPrice')
+                    timestamp=item['meta'].get('regularMarketTime')
+                    result[symbol]={'price':price,'asof':datetime.fromtimestamp(timestamp,timezone.utc).isoformat() if timestamp else None}
+                except Exception:
+                    result[symbol]={'price':None,'asof':None}
+            _external_cache.update(at=now,checked_at=datetime.now(timezone.utc).isoformat(),prices=result)
+        return {'prices':_external_cache['prices'],'checked_at':_external_cache['checked_at'],'source':'Yahoo Finance (unofficial, possibly delayed)','realtime':False}
+
+@app.route('/api/daily-pnl')
+@auth
+def daily_pnl():
+    now=time.monotonic()
+    if _pnl_cache['data'] is not None and now-_pnl_cache['at']<60:
+        return _pnl_cache['data']
+    from zoneinfo import ZoneInfo
+    local_now=datetime.now(ZoneInfo('Asia/Kuwait'))
+    day_start=local_now.replace(hour=0,minute=0,second=0,microsecond=0)
+    start_ms=int(day_start.timestamp()*1000)
+    end_ms=int(local_now.timestamp()*1000)
+    # Binance income API returns signed USDT values; include realized PNL, fees, funding.
+    totals={'REALIZED_PNL':D('0'),'COMMISSION':D('0'),'FUNDING_FEE':D('0')}
+    gains=D('0');losses=D('0')
+    # Limit 1000 rows per request. If history exceeds this, report incomplete rather than wrong totals.
+    rows=signed('GET','/fapi/v1/income',{'startTime':start_ms,'endTime':end_ms,'limit':1000})
+    if len(rows)>=1000:
+        return {'error':'نتائج اليوم تتجاوز 1000 سجل؛ يلزم ترقيم الصفحات'},409
+    for row in rows:
+        typ=row.get('incomeType')
+        if typ not in totals or row.get('asset')!='USDT':continue
+        amount=D(str(row['income']))
+        totals[typ]+=amount
+        if typ=='REALIZED_PNL':
+            if amount>0:gains+=amount
+            elif amount<0:losses+=amount
+    net=sum(totals.values(),D('0'))
+    fmt=lambda n:format(n.quantize(D('0.0001')),'f')
+    data={'day':day_start.strftime('%Y-%m-%d')+' (الكويت)','gains':fmt(gains),'losses':fmt(losses),
+          'fees_funding':fmt(totals['COMMISSION']+totals['FUNDING_FEE']),'net':fmt(net)}
+    _pnl_cache.update(at=now,data=data)
+    return data
+
+def init_investors():
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS investor_accounts (
+            id BIGSERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL, accepted_terms_version TEXT NOT NULL,
+            accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            subscription_status TEXT NOT NULL DEFAULT 'TRIAL',
+            trial_end TIMESTAMPTZ NOT NULL DEFAULT (NOW()+INTERVAL '7 days'),
+            paid_until TIMESTAMPTZ)""")
+
+INVESTOR_TERMS_VERSION='draft-2026-10-22'
+INVESTOR_TERMS="""هذه نسخة تجريبية لعرض الأسعار وإدارة حساب الاشتراك فقط. لا يودع المستخدم أموالاً ولا يفوض البوت بالتداول نيابة عنه بموجب هذه الموافقة. البنود المقترحة بشأن مشاركة 50% من الأرباح وإعادة استثمار رأس المال ومنع السحب غير نافذة في هذه النسخة، وتتطلب اتفاقية مستقلة ومراجعة قانونية وترخيصاً ملائماً حيث يلزم. الأسعار الخارجية إرشادية وقد تتأخر. الاشتراكات المدفوعة غير مفعلة حتى تتضح الأسعار وشروط الدفع والإلغاء والاسترداد."""
+
+INVESTOR_PAGE="""<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>المستثمرون | البوت الكويتي</title>
+<style>body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20px}main{max-width:820px;margin:auto}article{background:#1d2b40;padding:20px;border-radius:14px;margin:16px 0}input,button{font:inherit;padding:12px;margin:7px 0;max-width:100%;box-sizing:border-box}input{width:100%;border-radius:8px}button{background:#36bb9a;border:0;border-radius:8px;cursor:pointer}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #41506a}small{color:#b6c6d9}a{color:#70d9ff}label{display:block;margin:8px 0}.terms{max-height:160px;overflow:auto;background:#101827;padding:12px;border-radius:8px}</style>
+<main><div style='text-align:left'><label>🌐 Language <select id='language' onchange='setLang(this.value)' style='padding:9px;border-radius:8px'><option value='ar'>العربية</option><option value='en'>English</option><option value='fr'>Français</option><option value='es'>Español</option><option value='hi'>हिन्दी</option><option value='ur'>اردو</option><option value='tr'>Türkçe</option><option value='zh'>中文</option><option value='ru'>Русский</option><option value='pt'>Português</option><option value='de'>Deutsch</option><option value='id'>Bahasa Indonesia</option></select></label></div><h1>🇰🇼 البوت الكويتي — المستثمرون</h1><p><small>الحد الأدنى للاستثمار المقترح: 50 USDT. الإيداع وإدارة الأموال غير مفعلين.</small></p>
+{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
+{% if user %}<article><h2>حسابك</h2><p>{{user.email}}</p><p>حالة الاشتراك: {{user.subscription_status}}</p><p>انتهاء التجربة: {{user.trial_end}}</p><p>انتهاء الاشتراك المدفوع: {{user.paid_until or 'غير مفعل'}}</p><p><small>لا توجد محفظة إيداع أو سحب أو تنفيذ تداول في حساب المستثمر.</small></p><p><a href='/investors/requests'>طلبات الاشتراك ومبالغ الاستثمار</a></p><a href="{{url_for('investor_logout')}}">تسجيل الخروج</a></article>
+<article><h2>أسعار الأسواق</h2><small>من Yahoo Finance غير الرسمي؛ قد تتأخر الأسعار أو تكون غير متاحة. تتحدث الشاشة كل ثانية والمصدر نحو كل 30 ثانية.</small><table><thead><tr><th>السوق</th><th>السعر الإرشادي</th><th>وقت المصدر</th></tr></thead><tbody id="prices"><tr><td colspan="3">جاري التحميل...</td></tr></tbody></table></article>
+{% else %}<article><h2>إنشاء حساب جديد</h2><form method="post" action="{{url_for('investor_register')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>البريد الإلكتروني<input type="email" name="email" autocomplete="email" required maxlength="254"></label><label>كلمة المرور (12 حرفاً على الأقل)<input type="password" name="password" autocomplete="new-password" minlength="12" required></label><div class="terms">{{terms}}</div><label><input style="width:auto" type="checkbox" name="accept" value="yes" required> قرأت ووافقت على شروط النسخة التجريبية أعلاه</label><button>تسجيل وبدء 7 أيام تجريبية</button></form></article>
+<article><h2>تسجيل الدخول</h2><form method="post" action="{{url_for('investor_login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد الإلكتروني" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form><p><a href="{{url_for('investor_forgot')}}">نسيت كلمة المرور؟ / Forgot password?</a></p></article>{% endif %}
+<article><h2>العروض المقترحة — الدفع غير مفعل</h2><table><tr><th>العرض</th><th>السعر المبدئي</th></tr><tr><td>7 أيام تجربة</td><td>مجاناً</td></tr><tr><td>أسبوع</td><td>19.99$</td></tr><tr><td>3 أسابيع + الرابع مجاناً</td><td>يحتاج تأكيد طريقة الحساب</td></tr><tr><td>3 أشهر + الرابع مجاناً</td><td>49.99$ — يحتاج تأكيد هل السعر شهري أم إجمالي</td></tr><tr><td>عام + شهران مجاناً</td><td>99.99$ — يحتاج تأكيد هل السعر سنوي</td></tr></table><p><small>خصم نهاية الأسبوع المقترح: 10%، لم يُفعّل لعدم وجود دفع بعد.</small></p></article></main>
+{% if user %}<script>const markets=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['WTI','CLUSDT'],['برنت','BZUSDT']];async function prices(){if(document.hidden)return;try{const r=await fetch('/api/market-prices',{cache:'no-store'});if(!r.ok)throw Error('network');const d=await r.json(),body=document.getElementById('prices');body.replaceChildren();for(const [name,sym] of markets){const tr=document.createElement('tr'),p=d.prices[sym];for(const value of [name,p&&p.price!=null?Number(p.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح',p&&p.asof?new Date(p.asof).toLocaleTimeString('ar-KW'):'—']){const td=document.createElement('td');td.textContent=value;tr.appendChild(td)}body.appendChild(tr)}}catch(e){}}prices();setInterval(prices,1000)</script>{% endif %}<script>
+const labels={
+ en:['Kuwaiti Bot — Investors','Create a new account','Sign in','Email','Password','Login','Forgot password?','Market prices','Subscription offers'],
+ fr:['Bot Koweïtien — Investisseurs','Créer un compte','Connexion','E-mail','Mot de passe','Connexion','Mot de passe oublié ?','Prix des marchés','Offres d’abonnement'],
+ es:['Bot Kuwaití — Inversores','Crear cuenta','Iniciar sesión','Correo','Contraseña','Entrar','¿Olvidó su contraseña?','Precios de mercado','Ofertas de suscripción'],
+ hi:['कुवैती बॉट — निवेशक','नया खाता','लॉग इन','ईमेल','पासवर्ड','लॉग इन','पासवर्ड भूल गए?','बाजार भाव','सदस्यता'],
+ ur:['کویتی بوٹ — سرمایہ کار','نیا اکاؤنٹ','لاگ ان','ای میل','پاس ورڈ','داخل ہوں','پاس ورڈ بھول گئے؟','مارکیٹ قیمتیں','سبسکرپشن'],
+ tr:['Kuveyt Botu — Yatırımcılar','Yeni hesap','Giriş','E-posta','Şifre','Giriş','Şifremi unuttum','Piyasa fiyatları','Abonelikler'],
+ zh:['科威特机器人 — 投资者','创建账户','登录','电子邮件','密码','登录','忘记密码？','市场价格','订阅方案'],
+ ru:['Кувейтский бот — Инвесторы','Создать аккаунт','Войти','Почта','Пароль','Войти','Забыли пароль?','Цены рынков','Подписки'],
+ pt:['Bot Kuwaitiano — Investidores','Criar conta','Entrar','E-mail','Senha','Entrar','Esqueceu a senha?','Preços de mercado','Planos'],
+ de:['Kuwait-Bot — Anleger','Konto erstellen','Anmelden','E-Mail','Passwort','Anmelden','Passwort vergessen?','Marktpreise','Abonnements'],
+ id:['Bot Kuwait — Investor','Buat akun','Masuk','Email','Kata sandi','Masuk','Lupa kata sandi?','Harga pasar','Langganan']};
+const originals=['البوت الكويتي — المستثمرون','إنشاء حساب جديد','تسجيل الدخول','البريد الإلكتروني','كلمة المرور','دخول','نسيت كلمة المرور؟','أسعار الأسواق','العروض المقترحة'];
+function setLang(lang){localStorage.setItem('investor_lang',lang);document.documentElement.lang=lang;document.documentElement.dir=['ar','ur'].includes(lang)?'rtl':'ltr';const dict=labels[lang];if(!dict)return;document.querySelectorAll('h1,h2,label,button,a').forEach(el=>{if(el.children.length>0 && el.tagName!=='A')return;let text=el.textContent.trim();for(let i=0;i<originals.length;i++)if(text.includes(originals[i])){el.textContent=text.replace(originals[i],dict[i]);break;}})}
+try{const lang=localStorage.getItem('investor_lang')||((navigator.language||'ar').split('-')[0]);document.getElementById('language').value=labels[lang]?lang:'ar';setLang(lang)}catch(e){}
+</script></html>"""
+
+@app.route('/investors')
+def investors():
+    user=None
+    if session.get('investor_id'):
+        init_investors()
+        with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+            c.execute('SELECT email,subscription_status,trial_end,paid_until FROM investor_accounts WHERE id=%s',(session['investor_id'],))
+            user=c.fetchone()
+    return render_template_string(INVESTOR_PAGE,user=user,csrf=csrf(),terms=INVESTOR_TERMS)
+
+@app.route('/investors/register',methods=['POST'])
+def investor_register():
+    try:
+        check_csrf()
+        if request.form.get('accept')!='yes':raise ValueError('يجب الموافقة على شروط التجربة')
+        email=request.form.get('email','').strip().lower();pw=request.form.get('password','')
+        if '@' not in email or len(email)>254 or len(pw)<12 or len(pw)>256:raise ValueError('تحقق من البريد وكلمة المرور (12 حرفاً على الأقل)')
+        init_investors()
+        with db() as conn,conn.cursor() as c:
+            c.execute('INSERT INTO investor_accounts(email,password_hash,accepted_terms_version) VALUES(%s,%s,%s) RETURNING id',(email,generate_password_hash(pw),INVESTOR_TERMS_VERSION))
+            uid=c.fetchone()[0]
+        session.clear();session['investor_id']=uid;session.permanent=True;csrf()
+        flash('تم إنشاء حساب العرض التجريبي')
+    except psycopg2.errors.UniqueViolation:
+        flash('البريد مسجل بالفعل')
+    except Exception as e:flash('تعذر التسجيل: '+str(e)[:140])
+    return redirect(url_for('investors'))
+
+@app.route('/investors/login',methods=['POST'])
+def investor_login():
+    try:
+        check_csrf();init_investors()
+        with db() as conn,conn.cursor() as c:
+            c.execute('SELECT id,password_hash FROM investor_accounts WHERE email=%s',(request.form.get('email','').strip().lower(),))
+            row=c.fetchone()
+        if not row or not check_password_hash(row[1],request.form.get('password','')):raise ValueError('بيانات الدخول غير صحيحة')
+        session.clear();session['investor_id']=row[0];session.permanent=True;csrf()
+    except Exception as e:flash(str(e)[:140])
+    return redirect(url_for('investors'))
+
+
+# Secure, single-use investor password reset. Requires SMTP_* settings in Render.
+def init_password_resets():
+    init_investors()
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS investor_password_resets (
+            id BIGSERIAL PRIMARY KEY,
+            investor_id BIGINT NOT NULL REFERENCES investor_accounts(id) ON DELETE CASCADE,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            used_at TIMESTAMPTZ)""")
+        c.execute('CREATE INDEX IF NOT EXISTS idx_password_resets_user_time ON investor_password_resets(investor_id,created_at DESC)')
+
+RESET_PAGE="""<!doctype html><html lang='ar' dir='rtl'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>استعادة كلمة المرور</title><style>body{background:#101827;color:white;font:16px system-ui;padding:20px}main{max-width:520px;margin:auto}article{background:#1d2b40;padding:24px;border-radius:14px}input,button{box-sizing:border-box;width:100%;padding:13px;margin:8px 0;border-radius:8px}button{background:#36bb9a;border:0}a{color:#70d9ff}</style><main><article><h1>{{heading}}</h1><p>{{help}}</p>{% for m in get_flashed_messages() %}<p>{{m}}</p>{% endfor %}<form method='post'><input type='hidden' name='csrf' value='{{csrf}}'>{% if token %}<input type='hidden' name='token' value='{{token}}'><label>كلمة المرور الجديدة (12 حرفًا على الأقل)</label><input name='password' type='password' minlength='12' maxlength='256' autocomplete='new-password' required><label>تأكيد كلمة المرور</label><input name='confirm' type='password' minlength='12' maxlength='256' autocomplete='new-password' required>{% else %}<label>البريد الإلكتروني المسجل</label><input name='email' type='email' required maxlength='254' autocomplete='email'>{% endif %}<button>{{'تغيير كلمة المرور' if token else 'إرسال رابط الاستعادة'}}</button></form><a href='/investors'>العودة للمستثمرين</a></article></main></html>"""
+
+def send_reset_mail(email,token):
+    host=os.environ.get('SMTP_HOST','');user=os.environ.get('SMTP_USER','')
+    password=os.environ.get('SMTP_PASSWORD','');sender=os.environ.get('SMTP_FROM','')
+    if not all([host,user,password,sender]):
+        app.logger.warning('Password reset SMTP not configured')
+        return False
+    from urllib.parse import quote
+    url=url_for('investor_reset',token=token,_external=True)
+    msg=EmailMessage();msg['Subject']='Alkuwaiti Bot - Password reset / استعادة كلمة المرور'
+    msg['From']=sender;msg['To']=email
+    msg.set_content('رابط تغيير كلمة المرور صالح لمدة 20 دقيقة ويستخدم مرة واحدة فقط:\n'+url+'\n\nIf you did not request this, ignore this email.')
+    port=int(os.environ.get('SMTP_PORT','465'))
+    if port==465:
+        with smtplib.SMTP_SSL(host,port,timeout=10,context=ssl.create_default_context()) as smtp:
+            smtp.login(user,password);smtp.send_message(msg)
+    else:
+        with smtplib.SMTP(host,port,timeout=10) as smtp:
+            smtp.starttls(context=ssl.create_default_context());smtp.login(user,password);smtp.send_message(msg)
+    return True
+
+@app.route('/investors/forgot-password',methods=['GET','POST'])
+def investor_forgot():
+    if request.method=='POST':
+        check_csrf()
+        email=request.form.get('email','').strip().lower()
+        # Generic response prevents revealing registered emails.
+        if len(email)<=254 and '@' in email:
+            try:
+                init_password_resets()
+                with db() as conn,conn.cursor() as c:
+                    c.execute('SELECT id FROM investor_accounts WHERE email=%s',(email,));row=c.fetchone()
+                    if row:
+                        uid=row[0]
+                        c.execute("SELECT COUNT(*) FROM investor_password_resets WHERE investor_id=%s AND created_at>NOW()-INTERVAL '1 hour'",(uid,))
+                        if c.fetchone()[0]<3:
+                            token=secrets.token_urlsafe(40)
+                            digest=hashlib.sha256(token.encode()).hexdigest()
+                            c.execute("INSERT INTO investor_password_resets(investor_id,token_hash,expires_at) VALUES(%s,%s,NOW()+INTERVAL '20 minutes')",(uid,digest))
+                            # Sending only after commit prevents a link referencing an uncommitted token.
+                            conn.commit()
+                            try:send_reset_mail(email,token)
+                            except Exception:app.logger.exception('SMTP reset delivery failed')
+            except Exception:app.logger.exception('Password reset request failed')
+        flash('إذا كان البريد مسجلاً وخدمة البريد مفعلة، سيصلك رابط الاستعادة. راجع الرسائل غير المرغوبة.')
+        return redirect(url_for('investor_forgot'))
+    return render_template_string(RESET_PAGE,heading='نسيت كلمة المرور؟',help='أدخل بريدك لإرسال رابط استعادة صالح لمدة 20 دقيقة.',csrf=csrf(),token=None)
+
+@app.route('/investors/reset-password/<token>',methods=['GET','POST'])
+def investor_reset(token):
+    if len(token)>100 or len(token)<30:return 'رابط غير صالح',400
+    digest=hashlib.sha256(token.encode()).hexdigest()
+    if request.method=='POST':
+        check_csrf()
+        pw=request.form.get('password','')
+        if len(pw)<12 or len(pw)>256 or pw!=request.form.get('confirm'):
+            flash('تأكد من تطابق كلمة المرور وأنها 12 حرفًا على الأقل')
+            return redirect(url_for('investor_reset',token=token))
+        init_password_resets()
+        with db() as conn,conn.cursor() as c:
+            c.execute("""SELECT id,investor_id FROM investor_password_resets
+                WHERE token_hash=%s AND used_at IS NULL AND expires_at>NOW() FOR UPDATE""",(digest,))
+            row=c.fetchone()
+            if not row:return 'الرابط منتهي الصلاحية أو مستخدم بالفعل',400
+            c.execute('UPDATE investor_accounts SET password_hash=%s WHERE id=%s',(generate_password_hash(pw),row[1]))
+            c.execute('UPDATE investor_password_resets SET used_at=NOW() WHERE investor_id=%s AND used_at IS NULL',(row[1],))
+        session.clear()
+        flash('تم تغيير كلمة المرور. سجّل الدخول بكلمة المرور الجديدة.')
+        return redirect(url_for('investors'))
+    return render_template_string(RESET_PAGE,heading='تعيين كلمة مرور جديدة',help='الرابط صالح لمدة 20 دقيقة ويُستخدم مرة واحدة.',csrf=csrf(),token=token)
+
+@app.route('/investors/logout')
+def investor_logout():
+    session.clear();return redirect(url_for('investors'))
+
+
+# Investor administration: records only, no custody, payment processing or automatic profit fees.
+def init_investor_admin():
+    init_investors()
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS investor_financial_records (
+            id BIGSERIAL PRIMARY KEY, investor_id BIGINT NOT NULL REFERENCES investor_accounts(id),
+            category TEXT NOT NULL CHECK (category IN ('SUBSCRIPTION','INVESTMENT_DECLARED','TRADE_PROFIT','TRADE_LOSS','PROFIT_SHARE_PROPOSED')),
+            amount_usdt NUMERIC(22,8) NOT NULL CHECK(amount_usdt>=0),
+            reference TEXT, notes TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("""CREATE TABLE IF NOT EXISTS owner_settings (
+            id INTEGER PRIMARY KEY CHECK(id=1), rain_network TEXT, rain_deposit_address TEXT,
+            minimum_investment_usdt NUMERIC NOT NULL DEFAULT 50,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("INSERT INTO owner_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
+
+OWNER_PAGE="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>إدارة المستثمرين | البوت الكويتي</title>
+<style>body{font-family:system-ui;background:#101827;color:#eef3fa;padding:18px}main{max-width:1100px;margin:auto}article{background:#203047;border-radius:12px;padding:16px;margin:14px 0;overflow:auto}table{border-collapse:collapse;width:100%}td,th{padding:10px;border-bottom:1px solid #40536b;text-align:right;white-space:nowrap}input,button{padding:10px;font:inherit;border-radius:6px;max-width:100%}button{background:#31b99a;border:0}label{display:block;margin:12px 0}small{color:#c7d1df}a{color:#84dfff}</style>
+<main><h1>🇰🇼 لوحة صاحب البوت — المستثمرون</h1><p><a href='/'>العودة إلى لوحة البوت</a> | <a href='/owner/requests'>الموافقات وطرق الدفع</a></p>
+{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
+<article><h2>الحد الأدنى للاستثمار: {{settings.minimum_investment_usdt}} USDT</h2><p><small>الحد الأدنى معلومة ظاهرة في المنصة، وليس طلب تحويل أو تفويض لإدارة أموال.</small></p><p>عدد المستثمرين المسجلين: {{count}}</p></article>
+<article><h2>بيانات إيداع رين — محفوظة للإدارة فقط</h2><p><small>لا تعرض للمستثمرين ولا تُستخدم لتحصيل أموال تلقائياً. تأكد من الشبكة والعملة وقواعد رين قبل أي استخدام.</small></p><form method=post action='/owner/rain'><input type=hidden name=csrf value='{{csrf}}'><label>شبكة الإيداع <input name=network value='{{settings.rain_network or ""}}' maxlength=50 placeholder='مثال: شبكة مدعومة فعلاً في رين'></label><label>عنوان الإيداع <input name=address value='{{settings.rain_deposit_address or ""}}' maxlength=256 autocomplete=off placeholder='أدخل العنوان من حساب رين بنفسك'></label><button>حفظ إعدادات رين</button></form></article>
+<article><h2>ملخص السجلات (USDT)</h2><table><tr><th>التصنيف</th><th>الإجمالي المسجل</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>هذه سجلات إدارية غير متحقَّق منها بنظام دفع أو حسابات تداول منفصلة؛ ليست رصيداً أو دخلاً فعلياً مؤكداً. لا يتم تحويل كل 100 دولار تلقائياً.</small></article>
+<article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
+<article><h2>أحدث سجلات الأموال والأرباح والخسائر</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>التاريخ</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or '—'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>لا تُسجَّل عمليات مالية إلا بعد ربط مصدر موثوق للتحقق. مشاركة الأرباح 50% بند مقترح غير مُفعّل.</small></p></article></main></html>"""
+
+@app.route('/owner/investors')
+@auth
+def owner_investors():
+    init_investor_admin()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute('SELECT * FROM owner_settings WHERE id=1'); settings=c.fetchone()
+        c.execute('SELECT COUNT(*) AS n FROM investor_accounts');count=c.fetchone()['n']
+        c.execute('SELECT id,email,subscription_status,trial_end,paid_until,created_at FROM investor_accounts ORDER BY id DESC LIMIT 300');users=c.fetchall()
+        c.execute('SELECT category, SUM(amount_usdt) AS total FROM investor_financial_records GROUP BY category ORDER BY category');totals=c.fetchall()
+        c.execute('SELECT r.category,r.amount_usdt,r.reference,r.created_at,a.email FROM investor_financial_records r JOIN investor_accounts a ON a.id=r.investor_id ORDER BY r.id DESC LIMIT 100');records=c.fetchall()
+    labels={'SUBSCRIPTION':'اشتراكات','INVESTMENT_DECLARED':'استثمار مُعلن','TRADE_PROFIT':'ربح صفقة','TRADE_LOSS':'خسارة صفقة','PROFIT_SHARE_PROPOSED':'حصة أرباح مقترحة'}
+    return render_template_string(OWNER_PAGE,settings=settings,count=count,users=users,totals=totals,records=records,labels=labels,csrf=csrf())
+
+@app.route('/owner/rain',methods=['POST'])
+@auth
+def owner_rain():
+    check_csrf()
+    network=request.form.get('network','').strip()
+    address=request.form.get('address','').strip()
+    if len(network)>50 or len(address)>256 or (address and not network):
+        flash('أدخل الشبكة والعنوان الصحيحين');return redirect(url_for('owner_investors'))
+    init_investor_admin()
+    with db() as conn,conn.cursor() as c:
+        c.execute('UPDATE owner_settings SET rain_network=%s,rain_deposit_address=%s,updated_at=NOW() WHERE id=1',(network or None,address or None))
+    flash('حُفظت بيانات رين للإدارة فقط؛ لم يتم تفعيل أي تحصيل')
+    return redirect(url_for('owner_investors'))
+
+
+# Approval workflow only: NO transfer instructions, payments, custody or trading activation.
+def init_approval_workflow():
+    init_investor_admin()
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS owner_payment_methods (
+          id BIGSERIAL PRIMARY KEY, label TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+          enabled BOOLEAN NOT NULL DEFAULT TRUE, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("""CREATE TABLE IF NOT EXISTS investor_requests (
+          id BIGSERIAL PRIMARY KEY, investor_id BIGINT NOT NULL REFERENCES investor_accounts(id),
+          kind TEXT NOT NULL CHECK(kind IN ('SUBSCRIPTION','INVESTMENT')),
+          amount_usdt NUMERIC(22,2), method_id BIGINT REFERENCES owner_payment_methods(id),
+          status TEXT NOT NULL DEFAULT 'PENDING' CHECK(status IN ('PENDING','APPROVED','REJECTED')),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), decided_at TIMESTAMPTZ,
+          CONSTRAINT valid_request_amount CHECK ((kind='SUBSCRIPTION' AND amount_usdt IS NULL) OR (kind='INVESTMENT' AND amount_usdt>=50)))""")
+        c.execute("ALTER TABLE investor_requests ADD COLUMN IF NOT EXISTS investment_mode TEXT")
+        c.execute("""ALTER TABLE investor_requests DROP CONSTRAINT IF EXISTS investor_requests_investment_mode_check""")
+        c.execute("""ALTER TABLE investor_requests ADD CONSTRAINT investor_requests_investment_mode_check CHECK (investment_mode IS NULL OR investment_mode IN ('POOLED','INDIVIDUAL','BOTH'))""")
+        c.execute("ALTER TABLE investor_requests ADD COLUMN IF NOT EXISTS pooled_amount_usdt NUMERIC(22,2)")
+        c.execute("ALTER TABLE investor_requests ADD COLUMN IF NOT EXISTS individual_amount_usdt NUMERIC(22,2)")
+        c.execute("""ALTER TABLE investor_requests DROP CONSTRAINT IF EXISTS investor_requests_split_check""")
+        c.execute("""ALTER TABLE investor_requests ADD CONSTRAINT investor_requests_split_check CHECK (
+          investment_mode != 'BOTH' OR (kind='INVESTMENT' AND pooled_amount_usdt>=0.01 AND individual_amount_usdt>=0.01
+          AND pooled_amount_usdt+individual_amount_usdt=amount_usdt))""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_investor_requests_owner ON investor_requests(status,created_at DESC)")
+
+APPROVAL_STYLE="""<style>body{font-family:system-ui;background:#101827;color:#f2f5fc;margin:0;padding:18px}main{max-width:1050px;margin:auto}article{background:#213047;border-radius:12px;padding:16px;margin:12px 0;overflow:auto}input,select,button{font:inherit;padding:10px;margin:6px;max-width:100%}button{background:#32b99b;border:0;border-radius:7px}table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px solid #45556d;text-align:right}a{color:#8adfff}small{color:#c7d1df}</style>"""
+
+def kwt(dt):
+    if not dt:return '—'
+    from zoneinfo import ZoneInfo
+    return dt.astimezone(ZoneInfo('Asia/Kuwait')).strftime('%Y-%m-%d %H:%M:%S')
+
+@app.route('/investors/requests')
+def investor_requests_page():
+    if not session.get('investor_id'):return redirect(url_for('investors'))
+    init_approval_workflow()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute('SELECT id,label,description FROM owner_payment_methods WHERE enabled=TRUE ORDER BY id DESC');methods=c.fetchall()
+        c.execute('SELECT kind,status,amount_usdt,investment_mode,pooled_amount_usdt,individual_amount_usdt,created_at,decided_at FROM investor_requests WHERE investor_id=%s ORDER BY id DESC LIMIT 100',(session['investor_id'],));rows=c.fetchall()
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>طلبات المستثمر</title>"""+APPROVAL_STYLE+"""<main><h1>طلبات الاشتراك والاستثمار</h1><p><a href='/investors'>العودة لصفحة المستثمر</a></p><article><strong>الطلبات للمراجعة فقط.</strong> لا ترسل أموالاً ولا توجد تعليمات تحويل أو دفع مفعّلة. الموافقة لا تثبت استلام المال ولا تبدأ تداولاً.</article>{% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}<article><h2>طلب مراجعة اشتراك</h2><form method=post action='/investors/requests/new'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=kind value=SUBSCRIPTION><label>طريقة الدفع المفضلة (للتخطيط فقط)</label><select name=method_id><option value=''>لم أحدد</option>{% for m in methods %}<option value='{{m.id}}'>{{m.label}}</option>{% endfor %}</select><button>إرسال طلب الاشتراك للمراجعة</button></form></article><article><h2>طلب مراجعة مبلغ استثمار</h2><form method=post action='/investors/requests/new'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=kind value=INVESTMENT><label>المبلغ المقترح (50 USDT على الأقل)</label><input name=amount type=number min=50 step=.01 required><label>طريقة الاستثمار</label><select name=investment_mode required><option value=POOLED>محفظة مشتركة — توزيع النتائج حسب الحصص</option><option value=INDIVIDUAL>صفقات مستقلة محاسبيًا — سجل مخصص لي</option><option value=BOTH>النظامان معًا — أوزع المبلغ بينهما</option></select><label>إذا اخترت النظامين: المبلغ للمحفظة المشتركة (USDT)</label><input name=pooled_amount type=number min=.01 step=.01 placeholder="مثال: 30"><label>المبلغ للصفقات الفردية (USDT)</label><input name=individual_amount type=number min=.01 step=.01 placeholder="مثال: 20"><small>عند اختيار النظامين يجب أن يساوي مجموع المبلغين إجمالي الاستثمار، بحد أدنى إجمالي 50 USDT.</small><p><small>الاختيار للمراجعة فقط، ولا يُفعّل تداولًا أو إيداعًا.</small></p><button>إرسال المبلغ للمراجعة</button></form></article><article><h2>طرق الدفع المقترحة</h2>{% for m in methods %}<p><b>{{m.label}}</b> — {{m.description}}</p>{% else %}<p>لم تُضف طرق بعد.</p>{% endfor %}<small>لا تظهر عناوين المحافظ أو بيانات التحويل هنا حتى يُجهز نظام دفع مرخص وآمن.</small></article><article><h2>سجل طلباتي — بتوقيت الكويت</h2><table><tr><th>النوع</th><th>المبلغ</th><th>النظام</th><th>الحالة</th><th>الإنشاء</th><th>القرار</th></tr>{% for r in rows %}<tr><td>{{r.kind}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{'مشترك' if r.investment_mode=='POOLED' else 'مستقل محاسبيًا' if r.investment_mode=='INDIVIDUAL' else 'النظامان معًا' if r.investment_mode=='BOTH' else '—'}}{% if r.investment_mode=='BOTH' %} (مشترك {{r.pooled_amount_usdt}} / فردي {{r.individual_amount_usdt}}){% endif %}</td><td>{{r.status}}</td><td>{{kwt(r.created_at)}}</td><td>{{kwt(r.decided_at)}}</td></tr>{% endfor %}</table></article></main></html>"""
+    return render_template_string(html,methods=methods,rows=rows,csrf=csrf(),kwt=kwt)
+
+@app.route('/investors/requests/new',methods=['POST'])
+def investor_request_new():
+    if not session.get('investor_id'):return redirect(url_for('investors'))
+    check_csrf();init_approval_workflow()
+    kind=request.form.get('kind')
+    if kind not in ('SUBSCRIPTION','INVESTMENT'):return 'نوع طلب غير صحيح',400
+    amount=None;method_id=None;investment_mode=None;pooled_amount=None;individual_amount=None
+    if kind=='INVESTMENT':
+        try:amount=D(request.form.get('amount',''))
+        except Exception:return 'مبلغ غير صالح',400
+        if not amount.is_finite() or amount<50 or amount>D('100000000') or amount.as_tuple().exponent < -2:return 'المبلغ يجب أن يكون 50 على الأقل وبدقة سنت',400
+        investment_mode=request.form.get('investment_mode')
+        if investment_mode not in ('POOLED','INDIVIDUAL','BOTH'):return 'اختر طريقة الاستثمار',400
+        if investment_mode=='BOTH':
+            try:
+                pooled_amount=D(request.form.get('pooled_amount',''))
+                individual_amount=D(request.form.get('individual_amount',''))
+            except Exception:return 'أدخل المبلغ المخصص لكل نظام',400
+            for part in (pooled_amount,individual_amount):
+                if not part.is_finite() or part<D('0.01') or part.as_tuple().exponent < -2:
+                    return 'يجب إدخال مبلغ صحيح لكل نظام بدقة سنت',400
+            if pooled_amount+individual_amount!=amount:
+                return 'مجموع مبالغ النظامين لا يساوي إجمالي الاستثمار',400
+    else:
+        raw=request.form.get('method_id','')
+        if raw:
+            if not raw.isdecimal():return 'طريقة غير صحيحة',400
+            method_id=int(raw)
+            with db() as conn,conn.cursor() as c:
+                c.execute('SELECT 1 FROM owner_payment_methods WHERE id=%s AND enabled=TRUE',(method_id,))
+                if not c.fetchone():return 'طريقة غير متاحة',400
+    with db() as conn,conn.cursor() as c:
+        c.execute('INSERT INTO investor_requests(investor_id,kind,amount_usdt,method_id,investment_mode,pooled_amount_usdt,individual_amount_usdt) VALUES(%s,%s,%s,%s,%s,%s,%s)',(session['investor_id'],kind,amount,method_id,investment_mode,pooled_amount,individual_amount))
+    flash('تم إرسال الطلب للمراجعة، ولا يُطلب منك تحويل أموال')
+    return redirect(url_for('investor_requests_page'))
+
+@app.route('/owner/requests')
+@auth
+def owner_requests_page():
+    init_approval_workflow()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute('SELECT * FROM owner_payment_methods ORDER BY id DESC');methods=c.fetchall()
+        c.execute('SELECT r.*,a.email,m.label AS method FROM investor_requests r JOIN investor_accounts a ON a.id=r.investor_id LEFT JOIN owner_payment_methods m ON m.id=r.method_id ORDER BY r.id DESC LIMIT 300');rows=c.fetchall()
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>موافقات المستثمرين</title>"""+APPROVAL_STYLE+"""<main><h1>🇰🇼 الموافقات وطرق الدفع</h1><p><a href='/owner/investors'>لوحة المستثمرين</a> | <a href="/owner/payouts">مستحقاتي ووجهة التحويل</a></p><article><strong>نظام موافقات مبدئية فقط.</strong> لا توجد تحويلات أو تفعيل استثمار أو اقتطاع أرباح. جميع الأوقات بتوقيت الكويت مع الثواني.</article>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>إضافة طريقة دفع للعرض</h2><form method=post action='/owner/methods/add'><input type=hidden name=csrf value='{{csrf}}'><input name=label maxlength=80 placeholder='اسم الطريقة مثل رين أو تحويل بنكي' required><input name=description maxlength=200 placeholder='وصف عام فقط — بدون بيانات تحويل'><button>إضافة</button></form><table><tr><th>الطريقة</th><th>الوصف</th><th>الحالة</th><th>تاريخ الإضافة</th><th>إجراء</th></tr>{% for m in methods %}<tr><td>{{m.label}}</td><td>{{m.description}}</td><td>{{'معروضة' if m.enabled else 'مخفية'}}</td><td>{{kwt(m.created_at)}}</td><td><form method=post action='/owner/methods/toggle'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=id value='{{m.id}}'><button>{{'إخفاء' if m.enabled else 'إظهار'}}</button></form></td></tr>{% endfor %}</table></article><article><h2>طلبات المستثمرين</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ USDT</th><th>نظام الاستثمار</th><th>الطريقة</th><th>الحالة</th><th>تاريخ الطلب</th><th>تاريخ القرار</th><th>القرار</th></tr>{% for r in rows %}<tr><td>{{r.email}}</td><td>{{r.kind}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{'مشترك' if r.investment_mode=='POOLED' else 'مستقل محاسبيًا' if r.investment_mode=='INDIVIDUAL' else 'النظامان معًا' if r.investment_mode=='BOTH' else '—'}}{% if r.investment_mode=='BOTH' %} (مشترك {{r.pooled_amount_usdt}} / فردي {{r.individual_amount_usdt}}){% endif %}</td><td>{{r.method or '—'}}</td><td>{{r.status}}</td><td>{{kwt(r.created_at)}}</td><td>{{kwt(r.decided_at)}}</td><td>{% if r.status=='PENDING' %}<form method=post action='/owner/requests/decide'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=id value='{{r.id}}'><button name=decision value=APPROVED>موافقة مبدئية</button><button name=decision value=REJECTED>رفض</button></form>{% endif %}</td></tr>{% endfor %}</table></article></main></html>"""
+    return render_template_string(html,methods=methods,rows=rows,csrf=csrf(),kwt=kwt)
+
+@app.route('/owner/methods/add',methods=['POST'])
+@auth
+def owner_method_add():
+    check_csrf();init_approval_workflow()
+    label=request.form.get('label','').strip();description=request.form.get('description','').strip()
+    if not label or len(label)>80 or len(description)>200:return 'البيانات غير صحيحة',400
+    with db() as conn,conn.cursor() as c:c.execute('INSERT INTO owner_payment_methods(label,description) VALUES(%s,%s)',(label,description))
+    return redirect(url_for('owner_requests_page'))
+
+@app.route('/owner/methods/toggle',methods=['POST'])
+@auth
+def owner_method_toggle():
+    check_csrf();init_approval_workflow()
+    with db() as conn,conn.cursor() as c:c.execute('UPDATE owner_payment_methods SET enabled=NOT enabled WHERE id=%s',(request.form.get('id'),))
+    return redirect(url_for('owner_requests_page'))
+
+@app.route('/owner/requests/decide',methods=['POST'])
+@auth
+def owner_request_decide():
+    check_csrf();init_approval_workflow()
+    decision=request.form.get('decision')
+    if decision not in ('APPROVED','REJECTED'):return 'قرار غير صالح',400
+    with db() as conn,conn.cursor() as c:
+        c.execute("UPDATE investor_requests SET status=%s,decided_at=NOW() WHERE id=%s AND status='PENDING'",(decision,request.form.get('id')))
+        if c.rowcount!=1:flash('الطلب غير موجود أو تم اتخاذ قرار بشأنه مسبقاً')
+    return redirect(url_for('owner_requests_page'))
+
+
+# Owner-only payout planning. This DOES NOT move funds or validate ownership of any funds.
+def init_owner_payouts():
+    with db() as conn, conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS owner_payout_settings (
+            id INTEGER PRIMARY KEY CHECK(id=1), destination_type TEXT NOT NULL DEFAULT 'RAIN',
+            rain_network TEXT, rain_address TEXT, bank_name TEXT, bank_iban TEXT,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("INSERT INTO owner_payout_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
+        c.execute("""CREATE TABLE IF NOT EXISTS owner_entitlement_ledger (
+            id BIGSERIAL PRIMARY KEY, source_type TEXT NOT NULL CHECK(source_type IN ('SUBSCRIPTION_NET','PROFIT_SHARE_NET','OWNER_TRADING_NET','ADJUSTMENT')),
+            amount_usdt NUMERIC(22,8) NOT NULL, reference TEXT NOT NULL UNIQUE,
+            verification_status TEXT NOT NULL DEFAULT 'UNVERIFIED',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("""CREATE TABLE IF NOT EXISTS owner_payout_requests (
+            id BIGSERIAL PRIMARY KEY, amount_usdt NUMERIC(22,8) NOT NULL,
+            destination_type TEXT NOT NULL, destination_masked TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'DRAFT',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+
+OWNER_PAYOUT_HTML="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>المستحقات والتحويلات</title><style>body{font-family:system-ui;background:#101827;color:#fff;padding:18px}main{max-width:1000px;margin:auto}article{background:#203047;padding:18px;border-radius:12px;margin:14px 0}input,select,button{padding:11px;margin:5px;max-width:90%;border-radius:6px}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #607080;text-align:right}a{color:#8de1ff}small{color:#c8d3dd}</style><main><h1>🇰🇼 مستحقات صاحب البوت</h1><p><a href='/owner/investors'>إدارة المستثمرين</a> | <a href='/'>الرئيسية</a></p>{% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}<article><h2>حد التحويل المقترح: 100 USDT</h2><p>المستحقات المؤكدة والمسجلة: <b>{{balance}} USDT</b></p><p>المبالغ غير المتحقق منها لا تدخل في الحساب.</p><small>لا توجد تحويلات آلية أو طلبات سحب فعلية في هذه النسخة. لا يُنشأ طلب دفع إلا بعد إثبات المصدر والملكية والرسوم والموافقات النظامية.</small></article><article><h2>اختيار وجهة استلام مستحقاتك</h2><form method=post action='/owner/payout-settings'><input type=hidden name=csrf value='{{csrf}}'><label>الوجهة <select name=destination_type><option value=RAIN {% if settings.destination_type=='RAIN' %}selected{% endif %}>رين</option><option value=BANK {% if settings.destination_type=='BANK' %}selected{% endif %}>حساب بنكي</option></select></label><p>شبكة رين <input name=rain_network maxlength=50 value='{{settings.rain_network or ""}}' placeholder='الشبكة'></p><p>عنوان إيداع رين <input name=rain_address maxlength=256 value='{{settings.rain_address or ""}}' placeholder='العنوان'></p><p>اسم البنك <input name=bank_name maxlength=120 value='{{settings.bank_name or ""}}' placeholder='اسم البنك'></p><p>IBAN <input name=bank_iban maxlength=34 value='{{settings.bank_iban or ""}}' placeholder='رقم الحساب الدولي'></p><button>حفظ الوجهة فقط</button></form><small>هذه البيانات خاصة بالإدارة ولا تُرسل إلى Binance أو رين أو البنك. احفظها فقط على موقع HTTPS آمن. لا تدخل كلمة مرور أو رمز تحقق أو مفتاح محفظة.</small></article><article><h2>سجل المستحقات حسب المصدر</h2><table><tr><th>النوع</th><th>المبلغ</th><th>حالة التحقق</th><th>المرجع</th><th>الوقت (الكويت)</th></tr>{% for r in rows %}<tr><td>{{r.source_type}}</td><td>{{r.amount_usdt}}</td><td>{{r.verification_status}}</td><td>{{r.reference}}</td><td>{{kwt(r.created_at)}}</td></tr>{% endfor %}</table></article></main></html>"""
+
+@app.route('/owner/payouts')
+@auth
+def owner_payouts():
+    init_owner_payouts()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute('SELECT * FROM owner_payout_settings WHERE id=1');settings=c.fetchone()
+        c.execute("SELECT COALESCE(SUM(amount_usdt),0) AS balance FROM owner_entitlement_ledger WHERE verification_status='VERIFIED'");balance=c.fetchone()['balance']
+        c.execute('SELECT * FROM owner_entitlement_ledger ORDER BY id DESC LIMIT 100');rows=c.fetchall()
+    return render_template_string(OWNER_PAYOUT_HTML,settings=settings,balance=balance,rows=rows,csrf=csrf(),kwt=kwt)
+
+@app.route('/owner/payout-settings',methods=['POST'])
+@auth
+def owner_payout_settings_save():
+    check_csrf();init_owner_payouts()
+    kind=request.form.get('destination_type','')
+    network=request.form.get('rain_network','').strip();address=request.form.get('rain_address','').strip()
+    bank=request.form.get('bank_name','').strip();iban=request.form.get('bank_iban','').strip().replace(' ','').upper()
+    if kind not in ('RAIN','BANK') or len(network)>50 or len(address)>256 or len(bank)>120 or len(iban)>34:
+        flash('بيانات الوجهة غير صحيحة');return redirect(url_for('owner_payouts'))
+    if kind=='RAIN' and (not network or not address):
+        flash('أدخل عنوان رين والشبكة');return redirect(url_for('owner_payouts'))
+    if kind=='BANK' and (not bank or not iban or not iban.isalnum()):
+        flash('أدخل اسم البنك ورقم IBAN');return redirect(url_for('owner_payouts'))
+    with db() as conn,conn.cursor() as c:
+        c.execute('UPDATE owner_payout_settings SET destination_type=%s,rain_network=%s,rain_address=%s,bank_name=%s,bank_iban=%s,updated_at=NOW() WHERE id=1',(kind,network,address,bank,iban))
+    flash('تم حفظ وجهة الاستلام. لم يتم إرسال أي أموال.');return redirect(url_for('owner_payouts'))
 
 @app.route('/health')
 def health(): return {'status':'ok','live_trading_enabled':LIVE}
