@@ -164,7 +164,10 @@ def _assert_binance_available():
 # V29: conservative cross-worker REST limiter. Binance limits are weighted,
 # endpoint-specific and may also include other services on Render's shared IP.
 # One request/second is a conservative ceiling, not a guaranteed safe quota.
-REST_MIN_INTERVAL_SECONDS = max(1.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.5')))
+REST_MIN_INTERVAL_SECONDS = max(3.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '3.0')))
+# Public Yahoo quotes remain available, but Binance signal scans require explicit opt-in.
+BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','false').lower() == 'true'
+BINANCE_SCAN_INTERVAL_SECONDS = max(90, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','90')))
 _scan_local = threading.local()
 
 def _reserve_binance_request():
@@ -233,6 +236,15 @@ def auth(f):
         if not session.get('admin'): return redirect(url_for('login'))
         return f(*a,**kw)
     return wrap
+
+@app.route('/api/v32-connection-status')
+@auth
+def v32_connection_status():
+    state=_cooldown_state(force=True)
+    return {'binance':state, 'market_scans_enabled':BINANCE_MARKET_SCANS_ENABLED,
+            'scan_interval_seconds':BINANCE_SCAN_INTERVAL_SECONDS,
+            'minimum_request_interval_seconds':REST_MIN_INTERVAL_SECONDS,
+            'external_quotes':'Yahoo Finance (indicative; not Binance execution prices)'}
 
 @app.route('/api/binance-ban-status')
 @auth
@@ -378,13 +390,19 @@ def entry_order(row):
 
 def auto_scan():
     """Generate proposals only; never place orders. Globally max once per 90 seconds."""
+    if not BINANCE_MARKET_SCANS_ENABLED:
+        return {'status':'binance_scans_disabled','created':0,'message':'أسعار Yahoo مستمرة؛ تحليل شموع Binance متوقف احترازيًا حتى تفعيله يدويًا'}
+    if _cooldown_state()['remaining_seconds']>0:
+        return {'status':'binance_banned','created':0}
+    if is_bot_paused(): return {'status':'paused','created':0}
     init()
     with db() as conn, conn.cursor() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS bot_scan_gate
                      (id INTEGER PRIMARY KEY CHECK(id=1), started_at TIMESTAMPTZ)''')
         c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
         c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
-                     AND (started_at IS NULL OR started_at<NOW()-INTERVAL '90 seconds') RETURNING id''')
+                     AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
+                  (BINANCE_SCAN_INTERVAL_SECONDS,))
         if not c.fetchone(): return {'status':'rate_limited','created':0}
     if _cooldown_state()['remaining_seconds']>0:
         return {'status':'binance_banned','created':0}
@@ -566,7 +584,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state">مصدر خارجي، وليس سعر تنفيذ Binance.</small></article>
 <article><h2>📊 أرباح وخسائر اليوم</h2><p><small>اليوم بتوقيت الكويت، من سجل دخل Binance Futures: الربح والخسارة المحققة، العمولات، والتمويل. لا يشمل أرباح المراكز غير المغلقة.</small></p><div id="daily-pnl">جاري احتساب النتائج...</div></article>
 <article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
-<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p id="auto-scan-status">⏳ يبدأ التحليل تلقائيًا بعد فتح الصفحة...</p><small>لا تحتاج إلى الضغط على أي زر. تُحدث الشاشة كل ثانية ويُجرى فحص فني كامل تقريبًا كل دقيقة أثناء بقاء الصفحة مفتوحة ونشطة. قد لا توجد فرص تستوفي الشروط. لا تُرسل أوامر شراء أو بيع إلا بعد موافقتك، ومع تفعيل التداول الحقيقي بشكل منفصل.</small></article>
+<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p class=warn>🛡️ V32: تستمر أسعار Yahoo الخارجية حتى عند حظر Binance. تحليل شموع Binance متوقف افتراضيًا لمنع تكرار حظر IP؛ يمكن تفعيله لاحقًا عبر BINANCE_MARKET_SCANS_ENABLED=true في Render بعد التأكد من معالجة حدود الطلبات. أسعار Yahoo ليست أسعار تنفيذ ولا تولّد توصيات تداول.</p><p id="auto-scan-status">⏳ يبدأ التحليل تلقائيًا بعد فتح الصفحة...</p><small>لا تحتاج إلى الضغط على أي زر. تُحدث الشاشة كل ثانية ويُجرى فحص فني كامل تقريبًا كل دقيقة أثناء بقاء الصفحة مفتوحة ونشطة. قد لا توجد فرص تستوفي الشروط. لا تُرسل أوامر شراء أو بيع إلا بعد موافقتك، ومع تفعيل التداول الحقيقي بشكل منفصل.</small></article>
 <article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
 <article><h2>🕒 مراقبة تلقائية أثناء فتح الصفحة</h2>
@@ -628,7 +646,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const response=await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin',cache:'no-store'});
      const result=await response.json();
      if(!response.ok)throw Error(result.error||'تعذر الفحص');
-     if(label)label.textContent=result.scanned?'✅ اكتمل الفحص الفني التلقائي':'🟢 المراقبة تعمل؛ الفحص الفني التالي عند اكتمال الدقيقة';
+     if(label)label.textContent=result.status==='binance_scans_disabled'?'🛡️ أسعار الأسواق الخارجية مستمرة؛ فحص Binance متوقف احترازيًا':(result.status==='binance_banned'?'⏳ Binance محظور؛ التحليل المعتمد عليه مؤجل':(result.scanned?'✅ اكتمل فحص Binance':'🟢 المراقبة تعمل؛ الفحص التالي بعد المهلة المحددة'));
    }catch(e){if(label)label.textContent='⚠️ فشل الفحص التلقائي: '+e.message;}
    finally{watching=false;refresh();}
  }
@@ -683,14 +701,17 @@ def browser_watch():
     try:
         check_csrf()
         if is_bot_paused(): return {'status':'paused','scanned':False}
+        if not BINANCE_MARKET_SCANS_ENABLED:
+            return {'status':'binance_scans_disabled','scanned':False,'message':'الأسعار الخارجية تعمل، وفحص Binance متوقف احترازيًا'}
         # Cross-process rate limiting: only one browser scan per 90 seconds.
         if _cooldown_state()['remaining_seconds']>0:
             return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
         init()
         result=auto_scan()
         should_scan=result.get('status')=='ok'
-        try: monitor_close_suggestions()
-        except Exception: logging.exception('Browser close monitor failed')
+        if _cooldown_state()['remaining_seconds']==0:
+            try: monitor_close_suggestions()
+            except Exception: logging.exception('Browser close monitor failed')
         return {'status':'ok','scanned':should_scan}
     except Exception:
         logging.exception('Browser watch failed')
@@ -754,6 +775,8 @@ def market_prices():
 @app.route('/api/daily-pnl')
 @auth
 def daily_pnl():
+    if _cooldown_state()['remaining_seconds']>0:
+        return {'error':'Binance محظور مؤقتًا؛ لا يمكن تأكيد نتائج اليوم الآن','stale':True},503
     now=time.monotonic()
     if _pnl_cache['data'] is not None and now-_pnl_cache['at']<60:
         return _pnl_cache['data']
