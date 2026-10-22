@@ -31,7 +31,7 @@ def credentials():
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
 LIVE=os.environ.get('LIVE_TRADING_ENABLED','false').lower()=='true'
 D=Decimal
-TARGET_NET_ROI=D('0.05')
+TARGET_NET_ROI=D('0.10')
 ESTIMATED_ROUND_TRIP_COST=D('0.002')  # conservative fee/slippage buffer; funding unknown
 logging.basicConfig(level=logging.INFO)
 
@@ -40,6 +40,13 @@ def db():
 
 def init():
     with db() as conn, conn.cursor() as c:
+        c.execute('''CREATE TABLE IF NOT EXISTS bot_preferences (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            max_exposure_pct NUMERIC NOT NULL DEFAULT 10,
+            max_leverage INTEGER NOT NULL DEFAULT 10,
+            target_roi_pct NUMERIC NOT NULL DEFAULT 10,
+            updated_at TIMESTAMPTZ DEFAULT NOW())''')
+        c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_api_credentials (id INTEGER PRIMARY KEY CHECK (id=1), api_key_cipher BYTEA NOT NULL, api_secret_cipher BYTEA NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_orders_v2 (
             id BIGSERIAL PRIMARY KEY, symbol TEXT NOT NULL, direction TEXT NOT NULL,
@@ -47,6 +54,18 @@ def init():
             take_reference NUMERIC NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
             status TEXT NOT NULL DEFAULT 'PENDING', order_id TEXT, close_id TEXT,
             entry_price NUMERIC, quantity NUMERIC, stop_algo_id TEXT, note TEXT)''')
+
+def preferences():
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute('SELECT * FROM bot_preferences WHERE id=1')
+        return c.fetchone()
+
+def allowed_leverage(symbol, requested):
+    # Binance leverage brackets impose symbol-specific limits.
+    brackets=signed('GET','/fapi/v1/leverageBracket',{'symbol':symbol})
+    item=brackets[0] if isinstance(brackets,list) else brackets
+    cap=max(int(x['initialLeverage']) for x in item['brackets'])
+    return max(1,min(int(requested),cap,150))
 
 def signed(method,path,params=None):
     KEY,SECRET=credentials()
@@ -132,7 +151,8 @@ def feasibility(symbol, entry, stop, take, info=None):
             try: px=D(public('/fapi/v1/premiumIndex',{'symbol':order['symbol']})['markPrice'])
             except Exception: raise ValueError('تعذر احتساب الأوامر المعلقة')
         exposure+=remaining*px
-    room=equity*D('0.10')-exposure
+    prefs=preferences()
+    room=equity*D(str(prefs['max_exposure_pct']))/D('100')-exposure
     filters={f['filterType']:f for f in info['filters']}
     lot=filters.get('MARKET_LOT_SIZE') or filters.get('LOT_SIZE')
     if not lot: raise ValueError('شروط حجم الأمر غير متاحة')
@@ -142,15 +162,18 @@ def feasibility(symbol, entry, stop, take, info=None):
     # Smallest possible valid order, round up to step.
     from decimal import ROUND_UP
     qty=max(minimum,(min_value/mark/step).to_integral_value(rounding=ROUND_UP)*step)
-    if qty*mark>room or qty*mark>free: raise ValueError('الحد الأدنى يتجاوز المتاح من 10% أو الرصيد الحر')
-    # One-way, 1x notional exposure; target is 5% net on margin.
+    lev=allowed_leverage(symbol,prefs['max_leverage'])
+    if qty*mark>room or qty*mark/D(lev)>free*D('0.95'):
+        raise ValueError('الحد الأدنى يتجاوز سقف التعرض أو الهامش المتاح')
+    # Approximate net ROI on initial margin, not an assurance of profit.
     gross=abs(take-entry)/entry
-    net=gross-ESTIMATED_ROUND_TRIP_COST
-    if net<TARGET_NET_ROI: raise ValueError('الهدف لا يحقق 5% صافي تقديري على هامش 1x')
+    net=(gross-ESTIMATED_ROUND_TRIP_COST)*D(lev)
+    if net<D(str(prefs['target_roi_pct']))/100:
+        raise ValueError('الهدف الفني لا يحقق نسبة الربح الصافي المستهدفة على الهامش')
     return qty,mark,net
 
 def entry_order(row):
-    if not LIVE: raise ValueError('التداول الحقيقي معطّل: اضبط LIVE_TRADING_ENABLED=true بعد الاختبار')
+    if not LIVE: raise ValueError('التداول الحقيقي معطّل؛ يلزم اختبار التنفيذ ووقف الخسارة قبل تفعيله')
     symbol=row['symbol']; info=symbol_info(symbol)
     account=signed('GET','/fapi/v2/account')
     if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode؛ هذا الإصدار يدعم One-way فقط')
@@ -162,7 +185,9 @@ def entry_order(row):
         live_net=(take-mark)/mark-ESTIMATED_ROUND_TRIP_COST
     else:
         live_net=(mark-take)/mark-ESTIMATED_ROUND_TRIP_COST
-    if live_net<TARGET_NET_ROI:
+    prefs=preferences()
+    lev=allowed_leverage(symbol,prefs['max_leverage'])
+    if live_net*D(lev)<D(str(prefs['target_roi_pct']))/100:
         raise ValueError('بعد تغير السعر لم يعد هدف الصفقة يحقق 5% صافي تقديري')
     filters={f['filterType']:f for f in info['filters']}
     # Ensure protective stop is on correct side of live mark price.
@@ -174,7 +199,7 @@ def entry_order(row):
     if stop<=0: raise ValueError('وقف الخسارة غير صالح')
     # Set isolated leverage conservatively. Do not change leverage on existing positions.
     signed('POST','/fapi/v1/marginType',{'symbol':symbol,'marginType':'ISOLATED'}) if False else None
-    signed('POST','/fapi/v1/leverage',{'symbol':symbol,'leverage':1})
+    signed('POST','/fapi/v1/leverage',{'symbol':symbol,'leverage':lev})
     cid='ak'+str(row['id'])+'o'
     order=signed('POST','/fapi/v1/order',{'symbol':symbol,'side':side,'type':'MARKET','quantity':strnum(qty),'newClientOrderId':cid,'newOrderRespType':'RESULT'})
     # Binance conditional stop orders use Algo Service. If stop fails, immediately flatten.
@@ -199,8 +224,19 @@ body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-widt
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<a href="{{url_for('logout')}}">خروج</a><article><h2>الرصيد</h2><p>{{balance}}</p><small>رصيد المحفظة USDT وليس الربح المحقق</small></article>
 <article><h2>🔑 تغيير مفاتيح Binance API</h2><p><small>يمكنك استبدال المفاتيح متى شئت. لا تُعرض المفاتيح القديمة، وتُحفظ الجديدة مشفرة في Neon. يلزم CREDENTIALS_ENCRYPTION_KEY في Render.</small></p><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form><small>أنشئ المفاتيح بصلاحية Futures فقط، وعطّل السحب Withdrawal. تغيير المفاتيح لا يلغي الصفقات المفتوحة.</small></article>
-<article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض 10% وهدف صافي 5% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
-<article><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ 5% على هامش 1x (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
+<article><h2>⚙️ إعدادات رأس المال والرافعة</h2>
+<p><small>القيم التالية حدود قصوى وليست تعليمات لاستثمار الرصيد كاملًا. لا يمكن إضافة USDT حقيقي من لوحة البوت؛ الإيداع والتحويل يتمان من Binance فقط.</small></p>
+<form method="post" action="{{url_for('save_preferences')}}">
+<input type="hidden" name="csrf" value="{{csrf}}">
+<label>الحد الأقصى للتعرض الاسمي من المحفظة (%)</label><input type="number" name="max_exposure_pct" min="1" max="100" step="1" value="{{prefs.max_exposure_pct}}" required>
+<label>الحد الأعلى للرافعة (1 إلى 150، حسب حدود Binance)</label><input type="number" name="max_leverage" min="1" max="150" step="1" value="{{prefs.max_leverage}}" required>
+<label>هدف صافي العائد على هامش الصفقة (%)</label><input type="number" name="target_roi_pct" min="1" max="100" step="0.5" value="{{prefs.target_roi_pct}}" required>
+<button>حفظ إعدادات التحليل</button></form>
+<p class="warn">تحذير: الرافعة 150x قد تؤدي إلى تصفية سريعة وخسارة الهامش. البوت لا يستطيع زيادة رصيد Binance أو ضمان 10% ربح.</p>
+</article>
+<article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
+<article><h2>فحص فرص التداول</h2><form method="post" action="{{url_for('scan')}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>تحليل العملات والذهب والفضة والنفط</button></form><small>يعرض فقط فرصًا تجتاز الحد الأدنى وحد التعرض المحدد وهدف صافي 10% تقديريًا. يعاد الفحص عند الموافقة. التمويل والانزلاق الفعلي قد يغيران النتيجة.</small></article>
+<article><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance المفتوحة</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز أو تعذر جلبها</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
 <article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main></html>'''
 
@@ -241,7 +277,7 @@ def home():
     except Exception as e: flash('Neon: '+str(e)[:160])
     try: bal=str(wallet())+' USDT';pos=positions()
     except Exception as e: flash('Binance: '+str(e)[:160])
-    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent)
+    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,positions=pos,pending=pending,recent=recent,prefs=preferences())
 
 
 @app.route('/settings/api',methods=['POST'])
@@ -273,6 +309,24 @@ def update_api_credentials():
     except Exception:
         logging.exception('Credential update failed (no secrets logged)')
         flash('تعذر حفظ المفاتيح. تحقق من إعدادات Neon ومفتاح التشفير.')
+    return redirect(url_for('home'))
+
+@app.route('/settings/preferences',methods=['POST'])
+@auth
+def save_preferences():
+    try:
+        check_csrf()
+        exposure=D(request.form['max_exposure_pct'])
+        leverage=int(request.form['max_leverage'])
+        target=D(request.form['target_roi_pct'])
+        if not (D('1')<=exposure<=D('100') and 1<=leverage<=150 and D('1')<=target<=D('100')):
+            raise ValueError('الإعدادات خارج الحدود المسموحة')
+        init()
+        with db() as conn,conn.cursor() as c:
+            c.execute('UPDATE bot_preferences SET max_exposure_pct=%s,max_leverage=%s,target_roi_pct=%s,updated_at=NOW() WHERE id=1',(exposure,leverage,target))
+        flash('تم حفظ حدود التحليل. قد لا يسمح Binance بالرافعة المطلوبة لكل رمز.')
+    except Exception as e:
+        flash('تعذر حفظ الإعدادات: '+str(e)[:150])
     return redirect(url_for('home'))
 
 @app.route('/scan',methods=['POST'])
