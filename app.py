@@ -13,7 +13,7 @@ from werkzeug.security import check_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 
 app=Flask(__name__)
-app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)  # Set SECRET_KEY in Render for persistent sessions
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax', PERMANENT_SESSION_LIFETIME=3600)
 BASE=os.environ.get('BINANCE_BASE_URL','https://fapi.binance.com').rstrip('/')
 # API credentials can be rotated from the admin dashboard. Encrypted at rest in Neon.
@@ -30,9 +30,9 @@ def credentials():
 
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
 LIVE=os.environ.get('LIVE_TRADING_ENABLED','false').lower()=='true'
+D=Decimal
 TARGET_NET_ROI=D('0.05')
 ESTIMATED_ROUND_TRIP_COST=D('0.002')  # conservative fee/slippage buffer; funding unknown
-D=Decimal
 logging.basicConfig(level=logging.INFO)
 
 def db():
@@ -154,7 +154,16 @@ def entry_order(row):
     symbol=row['symbol']; info=symbol_info(symbol)
     account=signed('GET','/fapi/v2/account')
     if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode؛ هذا الإصدار يدعم One-way فقط')
+    if (datetime.now(timezone.utc)-row['created_at']).total_seconds()>900:
+        raise ValueError('انتهت صلاحية الإشارة (15 دقيقة). أعد التحليل')
     qty,mark,net=feasibility(symbol,D(row['entry_reference']),D(row['stop_reference']),D(row['take_reference']),info)
+    take=D(row['take_reference'])
+    if row['direction']=='LONG':
+        live_net=(take-mark)/mark-ESTIMATED_ROUND_TRIP_COST
+    else:
+        live_net=(mark-take)/mark-ESTIMATED_ROUND_TRIP_COST
+    if live_net<TARGET_NET_ROI:
+        raise ValueError('بعد تغير السعر لم يعد هدف الصفقة يحقق 5% صافي تقديري')
     filters={f['filterType']:f for f in info['filters']}
     # Ensure protective stop is on correct side of live mark price.
     stop=D(row['stop_reference']); side='BUY' if row['direction']=='LONG' else 'SELL'
@@ -220,7 +229,7 @@ def home():
     try:
         init()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' ORDER BY id DESC LIMIT 25");pending=c.fetchall()
+            c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25");pending=c.fetchall()
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
         filtered=[]
         for candidate in pending:
@@ -315,7 +324,7 @@ def approve(order_id):
                 c.execute("UPDATE bot_orders_v2 SET status='OPEN',order_id=%s,stop_algo_id=%s,quantity=%s,entry_price=%s,note='Stop placed' WHERE id=%s",(str(order.get('orderId')),str(protect.get('algoId')),qty,order.get('avgPrice','0'),order_id))
             flash('تم إرسال الفتح وتأكيد أمر وقف الخسارة. تحقق من Binance.')
         except Exception as e:
-            with db() as conn,conn.cursor() as c: c.execute("UPDATE bot_orders_v2 SET status='ERROR',note=%s WHERE id=%s",(str(e)[:400],order_id))
+            with db() as conn,conn.cursor() as c: c.execute("UPDATE bot_orders_v2 SET status='REQUIRES_REVIEW',note=%s WHERE id=%s",(str(e)[:400],order_id))
             raise
     except Exception as e: flash('لم يكتمل فتح الصفقة: '+str(e)[:220])
     return redirect(url_for('home'))
