@@ -1,7 +1,5 @@
-
-Flask
-Werkzeug
-gunicorn
-ccxt
-cryptography
-
+Flask>=3.1,<4
+Werkzeug>=3.1,<4
+gunicorn>=23,<24
+ccxt>=4.4,<5
+cryptography>=44,<47
