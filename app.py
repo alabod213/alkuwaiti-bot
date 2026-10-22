@@ -178,7 +178,7 @@ BINANCE_DASHBOARD_ACCOUNT_REFRESH = os.environ.get('BINANCE_DASHBOARD_ACCOUNT_RE
 def _endpoint_weight(path, params=None):
     # Conservative upper bounds for the endpoints used here; reject unknown endpoints.
     # Actual weights can change at Binance. Update after checking official docs.
-    if path == '/fapi/v1/income': return 100  # conservative reservation; consult current exchange documentation
+    if path == '/fapi/v1/income': return 40  # conservative internal estimate; verify against Binance headers
     if path == '/fapi/v1/klines': return 10
     if path == '/fapi/v1/exchangeInfo': return 10
     if path in ('/fapi/v2/account','/fapi/v3/account'): return 10
@@ -619,7 +619,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
 <a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الطلبات والموافقات</a>
 <a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">💰 مستحقاتي وطرق الاستلام</a>
-</div></article><article><h2>💰 رصيد Binance المحفوظ</h2><p>{{balance}}</p><small>آخر تحديث مؤكد: {{account_snapshot_at or 'لم يتم التحديث بعد'}} — هذه بيانات محفوظة وليست رصيدًا لحظيًا.</small><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز (كل 10 دقائق)</button></form><small>لا تضغط أثناء حظر Binance. فتح الصفحة لا يرسل طلبات Binance.</small></article>
+</div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث مؤكد: {{account_snapshot_at or 'لم يتم التحديث بعد'}} — لا نعرض بيانات غير مؤكدة كرصيد لحظي.</small><p><small id="v37-account-status">جارٍ فحص الاتصال الآمن...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز (كل 10 دقائق)</button></form><small>لا تضغط أثناء حظر Binance. فتح الصفحة لا يرسل طلبات Binance.</small></article>
 <article><h2>🔑 تغيير مفاتيح Binance API</h2><p><small>يمكنك استبدال المفاتيح متى شئت. لا تُعرض المفاتيح القديمة، وتُحفظ الجديدة مشفرة في Neon. يلزم CREDENTIALS_ENCRYPTION_KEY في Render.</small></p><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form><small>أنشئ المفاتيح بصلاحية Futures فقط، وعطّل السحب Withdrawal. تغيير المفاتيح لا يلغي الصفقات المفتوحة.</small></article>
 <article><h2>⚙️ إعدادات رأس المال والرافعة</h2>
 <p><small>القيم التالية حدود قصوى وليست تعليمات لاستثمار الرصيد كاملًا. لا يمكن إضافة USDT حقيقي من لوحة البوت؛ الإيداع والتحويل يتمان من Binance فقط.</small></p>
@@ -734,8 +734,30 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      document.getElementById('daily-pnl').textContent='آخر نتيجة محفوظة (ليست لحظية): أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم وتمويل '+p.fees_funding+' USDT | الصافي '+p.net+' USDT | '+p.day+' | آخر تحديث '+(p.captured_at?new Date(p.captured_at).toLocaleString('ar-KW'):'غير معروف');
    }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مؤكدة محفوظة بعد؛ استخدم زر التحديث بعد انتهاء الحظر.';}
  }
- refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,60000);
+ refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,1000);
  refresh();trigger();setInterval(refresh,10000);setInterval(trigger,90000);
+})();
+</script><script>(function(){
+ // Refresh the display every second; REST is rate-gated on the server.
+ const bal=document.getElementById('v37-balance');
+ if(!bal)return;
+ const status=document.getElementById('v37-account-status');
+ const at=document.getElementById('v37-account-time');
+ let busy=false;
+ async function poll(){
+   if(document.hidden||busy)return;
+   busy=true;
+   try{
+     const r=await fetch('/api/v37-live-account',{cache:'no-store',credentials:'same-origin'});
+     if(!r.ok)throw Error('تعذر قراءة الحساب');
+     const x=await r.json();
+     if(x.balance!==null){bal.textContent=x.balance+' USDT';at.textContent='آخر تأكيد من Binance: '+new Date(x.captured_at).toLocaleString('ar-KW');}
+     else{bal.textContent='بانتظار أول تحديث مؤكد من Binance';}
+     status.textContent=x.message||'آخر بيانات مؤكدة محفوظة';
+   }catch(e){status.textContent='تعذر التحديث مؤقتًا؛ آخر رصيد محفوظ لا يزال ظاهرًا';}
+   finally{busy=false;}
+ }
+ poll();setInterval(poll,1000);
 })();
 </script><script>(function(){
  let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
@@ -962,6 +984,54 @@ def _daily_pnl_from_binance():
     return {'day':day_start.strftime('%Y-%m-%d')+' (الكويت)','gains':fmt(gains),
             'losses':fmt(losses),'fees_funding':fmt(totals['COMMISSION']+totals['FUNDING_FEE']),
             'net':fmt(sum(totals.values(),D('0')))}
+
+# V37: automatic first snapshot and bounded refresh. Every-second browser polls
+# only this app. Binance REST is gated globally via Neon and the V33 weight budget.
+_v37_refresh_lock=threading.Lock()
+_v37_last_check=0.0
+
+def _v37_auto_refresh():
+    global _v37_last_check
+    with _v37_refresh_lock:
+        now=time.monotonic()
+        if now-_v37_last_check<10:return
+        _v37_last_check=now
+    try:
+        _assert_binance_available()
+        if _snapshot_reserve('v37_auto_account',60):
+            try:
+                account=signed('GET','/fapi/v2/account')
+                positions_data=signed('GET','/fapi/v2/positionRisk')
+                visible=[{k:str(p.get(k,'')) for k in ('symbol','positionAmt','entryPrice','unRealizedProfit')}
+                         for p in positions_data if D(str(p.get('positionAmt','0')))!=0]
+                _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
+            except Exception as e:
+                logging.warning('V37 automatic account update deferred: %s',str(e)[:140])
+        # Daily income is more expensive; refresh at most once every 15 minutes.
+        if _snapshot_reserve('v37_auto_pnl',900):
+            try:_snapshot_put('pnl',_daily_pnl_from_binance())
+            except Exception as e:logging.warning('V37 automatic PnL update deferred: %s',str(e)[:140])
+    except Exception as e:
+        logging.warning('V37 automatic refresh deferred: %s',str(e)[:140])
+
+@app.route('/api/v37-live-account')
+@auth
+def v37_live_account():
+    # Do not delay the browser poll with Binance requests.
+    # Run refresh asynchronously in this worker; shared Neon gates protect workers.
+    if _v37_refresh_lock.acquire(blocking=False):
+        _v37_refresh_lock.release()
+        threading.Thread(target=_v37_auto_refresh,daemon=True).start()
+    try:
+        row=_snapshot_get('account')
+        if row:
+            return {'balance':str(row['payload'].get('balance')),
+                    'captured_at':row['captured_at'].isoformat(),
+                    'message':'تحديث الشاشة كل ثانية؛ بيانات Binance مؤكدة عند وقت آخر تحديث'}
+        return {'balance':None,'captured_at':None,'message':'جارٍ جلب أول رصيد مؤكد تلقائيًا؛ تحقق من مفاتيح Binance إذا استمر الانتظار'}
+    except Exception:
+        logging.exception('V37 snapshot read failed')
+        return {'error':'تعذر قراءة بيانات الحساب'},503
 
 @app.route('/api/v34-snapshot-refresh',methods=['POST'])
 @auth
