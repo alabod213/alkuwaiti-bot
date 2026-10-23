@@ -15,10 +15,10 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet, InvalidToken
 
 app=Flask(__name__)
-app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)  # Configure SECRET_KEY on Render; otherwise sessions reset on restart
+app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax', PERMANENT_SESSION_LIFETIME=3600)
 BASE=os.environ.get('BINANCE_BASE_URL','https://fapi.binance.com').rstrip('/')
-# API credentials can be rotated from the admin dashboard. Encrypted at rest in Neon.
+
 def credentials():
     master=os.environ.get('CREDENTIALS_ENCRYPTION_KEY','')
     if master:
@@ -32,13 +32,12 @@ def credentials():
 
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
 
-# تم تفعيل التداول الحقيقي وإزالة قيود المحاكاة بناءً على طلبك
 LIVE=True
 EXECUTION_AUDITED=True
 
 D=Decimal
 TARGET_NET_ROI=D('0.10')
-ESTIMATED_ROUND_TRIP_COST=D('0.002')  # conservative fee/slippage buffer; funding unknown
+ESTIMATED_ROUND_TRIP_COST=D('0.002')
 logging.basicConfig(level=logging.INFO)
 
 def db():
@@ -158,12 +157,13 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية.')
 
-REST_MIN_INTERVAL_SECONDS = max(1.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.0')))
+# تعديل الفاصل الزمني وميزانية الأوزان لتكون محافظة وتمنع الحظر تماماً
+REST_MIN_INTERVAL_SECONDS = max(2.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '2.0')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
-BINANCE_SCAN_INTERVAL_SECONDS = max(30, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','30')))
+BINANCE_SCAN_INTERVAL_SECONDS = max(60, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','60')))
 _scan_local = threading.local()
 
-BINANCE_WEIGHT_BUDGET_1M = min(2400, max(50, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '1000'))))
+BINANCE_WEIGHT_BUDGET_1M = min(500, max(20, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '200'))))
 BINANCE_DASHBOARD_ACCOUNT_REFRESH = os.environ.get('BINANCE_DASHBOARD_ACCOUNT_REFRESH', 'true').lower() == 'true'
 
 def _endpoint_weight(path, params=None):
@@ -190,7 +190,7 @@ def _reserve_binance_request(path, params=None):
         c.execute("SELECT COALESCE(SUM(weight),0) FROM bot_binance_weight_events WHERE reserved_at > NOW() - INTERVAL '60 seconds'")
         used=int(c.fetchone()[0])
         if used+weight > BINANCE_WEIGHT_BUDGET_1M:
-            raise ValueError('تم تأجيل طلب Binance: ميزانية وزن الطلبات ممتلئة')
+            raise ValueError('تم تأجيل طلب Binance: ميزانية وزن الطلبات ممتلئة مؤقتاً لحماية الاتصال')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_binance_rate_limit
                      (id INTEGER PRIMARY KEY CHECK(id=1), next_allowed TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
         c.execute('INSERT INTO bot_binance_rate_limit(id) VALUES(1) ON CONFLICT DO NOTHING')
@@ -211,7 +211,7 @@ def _observe_binance_weight(response):
     if not raw:return
     try: used=int(raw)
     except (ValueError,TypeError):return
-    threshold=max(100, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','2000')))
+    threshold=max(50, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','500')))
     if used<threshold:return
     global _ban_until_ms,_ban_reason
     until=int(time.time()*1000)+120000
@@ -592,7 +592,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
 <a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
 <a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الطلبات والموافقات</a>
-<a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">💰 مستحقاتي وطرق الاستلام</a>
+<a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">💰 مستحقاتي وطرق الاستلاستلام</a>
 </div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><p><small id="v37-account-status">جارٍ فحص الاتصال...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز يدويًا</button></form></article>
 <article><h2>🔑 تغيير مفاتيح Binance API</h2><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form></article>
 <article><h2>⚙️ إعدادات رأس المال والرافعة</h2>
@@ -942,7 +942,7 @@ def _v37_auto_refresh():
     global _v37_last_check
     with _v37_refresh_lock:
         now=time.monotonic()
-        if now-_v37_last_check<10:return
+        if now-_v37_last_check<30:return # زيادة فترة التحقق لتجنب الاستنزاف
         _v37_last_check=now
     try:
         _assert_binance_available()
@@ -1040,7 +1040,7 @@ INVESTOR_PAGE="""<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8">
 {% if user %}<article><h2>حسابك</h2><p>{{user.email}}</p><p><a href="{{url_for('investor_logout')}}" class="logout-link">🚪 تسجيل خروج</a></p></article>
 {% else %}<article><h2>تسجيل الدخول</h2><form method="post" action="{{url_for('investor_login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد الإلكتروني" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>{% endif %}
 <article style="border:1px solid #577b9e"><h2>🔐 دخول المسؤول</h2>
-{% if admin_logged %}<p><a href="{{url_for('home')}}">لوحة التحكم والتداول الحقيقي</a></p>{% else %}<form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>بريد المسؤول<input type="email" name="email" required></label><label>كلمة المرور<input type="password" name="password" required></label><button type="submit">دخول الإدارة</button></form>{% endif %}</article></main></html>"""
+{% if admin_logged %}<p><a href="{{url_for('home')}}">لوحة التحكم والتداول الحقيقي</a></p>{% else %}<form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>بريد المسؤول<input type="email" name="email" required></label><label>كلمة المرور<input type="password" name="password" required></label><button type="submit">دخول الإدارة</button></form></article>{% endif %}</main></html>"""
 
 @app.route('/investors')
 def investors():
@@ -1190,7 +1190,6 @@ def home():
         bal='تعذر القراءة'
     return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,account_snapshot_at=snapshot_at,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state)
 
-@app.route('/settings/api',methods=['POST'])
 @app.route('/settings/api',methods=['POST'])
 @auth
 def update_api_credentials():
