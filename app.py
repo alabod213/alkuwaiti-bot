@@ -1,6 +1,6 @@
-"""Alkuwaiti Bot V44 - Ultimate Enterprise Edition (Complete & Unabbreviated).
+"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (All 9 Charts Displayed Simultaneously).
 Fully integrated Binance Futures automated trading, ban protection, Yahoo live prices, daily PnL,
-TradingView 9-assets charts, tiers, referrals, and backtesting simulator without any omitted parts.
+simultaneous TradingView 9-assets grid, tiers, referrals, and backtesting simulator.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re, json
 from datetime import datetime, timezone
@@ -660,8 +660,8 @@ def daily_pnl():
     except Exception:
         return {'error':'تعذر القراءة'},503
 
-PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي - V44 Enterprise Edition</title><style>
-body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-width:900px;margin:auto;padding:16px}article{background:#202d40;padding:16px;border-radius:14px;margin:14px 0;overflow:auto}button,input{font:inherit;padding:10px;border:0;border-radius:8px;margin:4px}button{background:#238657;color:white}button.danger{background:#b64040}a{color:#9fc8ff}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #435069;text-align:right}small{color:#bdc9da}.warn{color:#ffcf83}
+PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي - V45 Enterprise Edition</title><style>
+body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-width:950px;margin:auto;padding:16px}article{background:#202d40;padding:16px;border-radius:14px;margin:14px 0;overflow:auto}button,input{font:inherit;padding:10px;border:0;border-radius:8px;margin:4px}button{background:#238657;color:white}button.danger{background:#b64040}a{color:#9fc8ff}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #435069;text-align:right}small{color:#bdc9da}.warn{color:#ffcf83}
 
 :root{color-scheme:dark}body{transition:background-color .3s,color .3s}
 html[data-theme="light"]{color-scheme:light}
@@ -674,14 +674,15 @@ html[data-theme="light"] td,html[data-theme="light"] th{border-color:#dce4ee!imp
 html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;color:#172438;border:1px solid #b9c9d9}
 .logout-link{display:inline-block;padding:10px 14px;background:#a52e45!important;color:white!important;border-radius:10px;text-decoration:none;font-weight:700}
 .theme-switch{display:inline-block;margin:8px 0;padding:9px 12px;background:#315174;color:white;border:0;border-radius:9px;cursor:pointer}
-.tv-btn{background:#315174;color:white;padding:6px 12px;font-size:13px;border-radius:6px;cursor:pointer;border:0;margin:2px}
-.tv-btn:hover{background:#3b628d}
+.charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:10px}
+.chart-box{background:#182232;border:1px solid #33445c;border-radius:10px;padding:8px}
+.chart-title{font-weight:bold;margin-bottom:6px;color:#38bdf8;text-align:center}
 </style><script>(function(){
   function hour(){return Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kuwait',hour:'2-digit',hourCycle:'h23'}).format(new Date()))}
   function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
   window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V44 (Enterprise Edition)</h1><p class="warn">⚠️ التداول الحقيقي والآلي مفعل تماماً (الحد الأقصى: 100 صفقة يومياً)</p>
+})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V45 (Enterprise Edition)</h1><p class="warn">⚠️ التداول الحقيقي والآلي مفعل تماماً (الحد الأقصى: 100 صفقة يومياً)</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a> | <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a></p>
@@ -716,21 +717,19 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الموافقات والطلبات</a>
 </div></article>
 
-<article><h2>📈 الشارت التفاعلي المباشر (اختر العملة أو السلعة)</h2>
-<div style="margin-bottom:12px; display:flex; flex-wrap:wrap; gap:4px;">
-  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:BTCUSDT')">BTCUSDT</button>
-  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:ETHUSDT')">ETHUSDT</button>
-  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:BNBUSDT')">BNBUSDT</button>
-  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:SOLUSDT')">SOLUSDT</button>
-  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:XRPUSDT')">XRPUSDT</button>
-  <button type="button" class="tv-btn" onclick="switchTV('OANDA:XAUUSD')">الذهب (XAU)</button>
-  <button type="button" class="tv-btn" onclick="switchTV('OANDA:XAGUSD')">الفضة (XAG)</button>
-  <button type="button" class="tv-btn" onclick="switchTV('NYMEX:CL1!')">نفط WTI</button>
-  <button type="button" class="tv-btn" onclick="switchTV('ICEUS:BRN1!')">نفط برنت</button>
+<article><h2>📈 الشارتات التفاعلية المباشرة (جميع العملات والسلع الـ 9)</h2>
+<div class="charts-grid">
+  <div class="chart-box"><div class="chart-title">BTCUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22trendLineColor%22%3A%22%232962FF%22%2C%22underLineColor%22%3A%22rgba(41%2C%2098%2C%20255%2C%200.3)%22%2C%22underLineBottomColor%22%3A%22rgba(41%2C%2098%2C%20255%2C%200)%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%2C%22largeChartUrl%22%3A%22%22%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">ETHUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3AETHUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">BNBUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ABNBUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">SOLUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ASOLUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">XRPUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3AXRPUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">الذهب (XAUUSD)</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22OANDA%3AXAUUSD%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">الفضة (XAGUSD)</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22OANDA%3AXAGUSD%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">نفط WTI</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22NYMEX%3ACL1!%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">نفط برنت</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22ICEUS%3ABRN1!%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
 </div>
-<div class="tradingview-widget-container" style="height:380px;width:100%">
-  <iframe id="tv-chart-iframe" scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/advanced-chart/?locale=ar#%7B%22autosize%22%3Atrue%2C%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22interval%22%3A%225%22%2C%22theme%22%3A%22dark%22%2C%22style%22%3A%221%22%2C%22allow_symbol_change%22%3Atrue%2C%22support_host%22%3A%22https%3A%2F%2Fwww.tradingview.com%22%7D" style="width:100%;height:100%;"></iframe>
-</div></article>
+</article>
 
 <article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز</button></form></article>
 
@@ -752,21 +751,6 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 
 <article><h2>سجل الأوامر المنفذة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main>
 <script>
-function switchTV(sym){
-  const iframe=document.getElementById('tv-chart-iframe');
-  if(!iframe)return;
-  const config={
-    "autosize":true,
-    "symbol":sym,
-    "interval":"5",
-    "theme":"dark",
-    "style":"1",
-    "allow_symbol_change":true,
-    "support_host":"https://www.tradingview.com"
-  };
-  iframe.src="https://s.tradingview.com/embed-widget/advanced-chart/?locale=ar#"+encodeURIComponent(JSON.stringify(config));
-}
-
 (function(){
  const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
  async function refreshMarket(){
@@ -981,7 +965,7 @@ def toggle_bot():
     return redirect(url_for('home'))
 
 @app.route('/health')
-def health(): return {'status':'web_running','version':'V44','enterprise':True,'live_trading_enabled':LIVE}
+def health(): return {'status':'web_running','version':'V45','enterprise':True,'live_trading_enabled':LIVE}
 
 @app.route('/login',methods=['GET','POST'])
 def login():
