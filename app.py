@@ -1,5 +1,6 @@
-"""Alkuwaiti Bot V42 - Full Enterprise Edition (No Shortcuts, Complete Code).
-Fully automated Binance Futures trading with ban protection, tiers, referrals, TradingView and backtesting.
+"""Alkuwaiti Bot V44 - Ultimate Enterprise Edition (Complete & Unabbreviated).
+Fully integrated Binance Futures automated trading, ban protection, Yahoo live prices, daily PnL,
+TradingView 9-assets charts, tiers, referrals, and backtesting simulator without any omitted parts.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re, json
 from datetime import datetime, timezone
@@ -498,7 +499,168 @@ def scheduled_scan():
         logging.exception('Scheduled scan failed')
         return {'error':'scan failed'},500
 
-PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي - V42 Enterprise Edition</title><style>
+YAHOO_TICKERS={'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','BNBUSDT':'BNB-USD','SOLUSDT':'SOL-USD','XRPUSDT':'XRP-USD','XAUUSDT':'GC=F','XAGUSDT':'SI=F','CLUSDT':'CL=F','BZUSDT':'BZ=F'}
+_external_cache={'at':0.0,'checked_at':None,'prices':{}}
+_price_lock=threading.Lock()
+
+@app.route('/api/market-prices')
+@auth
+def market_prices():
+    with _price_lock:
+        now=time.monotonic()
+        if now-_external_cache['at']>=30:
+            result={}
+            for symbol,ticker in YAHOO_TICKERS.items():
+                try:
+                    r=requests.get('https://query1.finance.yahoo.com/v8/finance/chart/'+requests.utils.quote(ticker,safe=''),
+                                   params={'interval':'1m','range':'1d'},
+                                   headers={'User-Agent':'Mozilla/5.0 AlkuwaitiBot/1.0'},timeout=3)
+                    r.raise_for_status()
+                    item=r.json()['chart']['result'][0]
+                    price=item['meta'].get('regularMarketPrice')
+                    timestamp=item['meta'].get('regularMarketTime')
+                    result[symbol]={'price':price,'asof':datetime.fromtimestamp(timestamp,timezone.utc).isoformat() if timestamp else None}
+                except Exception:
+                    result[symbol]={'price':None,'asof':None}
+            _external_cache.update(at=now,checked_at=datetime.now(timezone.utc).isoformat(),prices=result)
+        return {'prices':_external_cache['prices'],'checked_at':_external_cache['checked_at'],'source':'Yahoo Finance','realtime':False}
+
+def _snapshot_table():
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS bot_verified_snapshots (
+          kind TEXT PRIMARY KEY, payload JSONB NOT NULL,
+          captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+
+def _snapshot_get(kind):
+    _snapshot_table()
+    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
+        c.execute('SELECT payload,captured_at FROM bot_verified_snapshots WHERE kind=%s',(kind,))
+        row=c.fetchone()
+    return row
+
+def _snapshot_put(kind,data):
+    _snapshot_table()
+    with db() as conn,conn.cursor() as c:
+        c.execute("""INSERT INTO bot_verified_snapshots(kind,payload,captured_at)
+                     VALUES(%s,%s::jsonb,NOW()) ON CONFLICT(kind) DO UPDATE
+                     SET payload=EXCLUDED.payload,captured_at=NOW()""",(kind,json.dumps(data)))
+
+def _snapshot_reserve(kind,seconds):
+    with db() as conn,conn.cursor() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS bot_snapshot_refresh_gate (
+                     kind TEXT PRIMARY KEY, attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
+        c.execute("""INSERT INTO bot_snapshot_refresh_gate(kind,attempted_at)
+                     VALUES(%s,NOW()) ON CONFLICT(kind) DO UPDATE
+                     SET attempted_at=NOW() WHERE bot_snapshot_refresh_gate.attempted_at
+                     < NOW()-(%s * INTERVAL '1 second') RETURNING kind""",(kind,seconds))
+        return c.fetchone() is not None
+
+def _daily_pnl_from_binance():
+    from zoneinfo import ZoneInfo
+    local_now=datetime.now(ZoneInfo('Asia/Kuwait'))
+    day_start=local_now.replace(hour=0,minute=0,second=0,microsecond=0)
+    rows=signed('GET','/fapi/v1/income',{'startTime':int(day_start.timestamp()*1000),
+               'endTime':int(local_now.timestamp()*1000),'limit':1000})
+    if len(rows)>=1000: raise ValueError('سجل اليوم تجاوز 1000 عملية')
+    totals={'REALIZED_PNL':D('0'),'COMMISSION':D('0'),'FUNDING_FEE':D('0')}
+    gains=losses=D('0')
+    for row in rows:
+        typ=row.get('incomeType')
+        if typ not in totals or row.get('asset')!='USDT':continue
+        amount=D(str(row['income']));totals[typ]+=amount
+        if typ=='REALIZED_PNL':
+            if amount>0:gains+=amount
+            elif amount<0:losses+=amount
+    fmt=lambda n:format(n.quantize(D('0.0001')),'f')
+    return {'day':day_start.strftime('%Y-%m-%d')+' (الكويت)','gains':fmt(gains),
+            'losses':fmt(losses),'fees_funding':fmt(totals['COMMISSION']+totals['FUNDING_FEE']),
+            'net':fmt(sum(totals.values(),D('0')))}
+
+BINANCE_AUTO_ACCOUNT_ENABLED=os.environ.get('BINANCE_AUTO_ACCOUNT_ENABLED','true').lower()=='true'
+_v37_refresh_lock=threading.Lock()
+_v37_last_check=0.0
+
+def _v37_auto_refresh():
+    global _v37_last_check
+    with _v37_refresh_lock:
+        now=time.monotonic()
+        if now-_v37_last_check<120:return
+        _v37_last_check=now
+    try:
+        _assert_binance_available()
+        if not BINANCE_AUTO_ACCOUNT_ENABLED:return
+        if _snapshot_reserve('v37_auto_account',1200):
+            try:
+                account=signed('GET','/fapi/v2/account')
+                positions_data=signed('GET','/fapi/v2/positionRisk')
+                visible=[{k:str(p.get(k,'')) for k in ('symbol','positionAmt','entryPrice','unRealizedProfit')}
+                         for p in positions_data if D(str(p.get('positionAmt','0')))!=0]
+                _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
+            except Exception as e:
+                logging.warning('V37 automatic account update deferred: %s',str(e)[:140])
+        if _snapshot_reserve('v37_auto_pnl',3600):
+            try:_snapshot_put('pnl',_daily_pnl_from_binance())
+            except Exception as e:logging.warning('V37 automatic PnL update deferred: %s',str(e)[:140])
+    except Exception as e:
+        logging.warning('V37 automatic refresh deferred: %s',str(e)[:140])
+
+@app.route('/api/v37-live-account')
+@auth
+def v37_live_account():
+    if BINANCE_AUTO_ACCOUNT_ENABLED and _v37_refresh_lock.acquire(blocking=False):
+        _v37_refresh_lock.release()
+        threading.Thread(target=_v37_auto_refresh,daemon=True).start()
+    try:
+        row=_snapshot_get('account')
+        if row:
+            return {'balance':str(row['payload'].get('balance')),
+                    'captured_at':row['captured_at'].isoformat(),
+                    'message':'الرصيد المحفوظ'}
+        return {'balance':None,'captured_at':None,'message':'اضغط تحديث يدوي...'}
+    except Exception:
+        return {'error':'تعذر قراءة بيانات الحساب'},503
+
+@app.route('/api/v34-snapshot-refresh',methods=['POST'])
+@auth
+def v34_snapshot_refresh():
+    try:
+        check_csrf()
+        _assert_binance_available()
+        account=signed('GET','/fapi/v2/account')
+        positions_data=signed('GET','/fapi/v2/positionRisk')
+        visible=[{k:str(p.get(k,'')) for k in ('symbol','positionAmt','entryPrice','unRealizedProfit')}
+                 for p in positions_data if D(str(p.get('positionAmt','0')))!=0]
+        _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
+        flash('تم تحديث الرصيد والمراكز الحقيقية بنجاح.')
+    except Exception as e:
+        flash('فشل التحديث: '+str(e)[:120])
+    return redirect(url_for('home'))
+
+@app.route('/api/v34-pnl-refresh',methods=['POST'])
+@auth
+def v34_pnl_refresh():
+    try:
+        check_csrf()
+        _assert_binance_available()
+        _snapshot_put('pnl',_daily_pnl_from_binance())
+        flash('تم تحديث أرباح وخسائر اليوم.')
+    except Exception as e:
+        flash('فشل التحديث: '+str(e)[:120])
+    return redirect(url_for('home'))
+
+@app.route('/api/daily-pnl')
+@auth
+def daily_pnl():
+    try:
+        row=_snapshot_get('pnl')
+        if not row:return {'error':'لا توجد نتائج محفوظة بعد.'},503
+        data=dict(row['payload'])
+        data['captured_at']=row['captured_at'].isoformat()
+        return data
+    except Exception:
+        return {'error':'تعذر القراءة'},503
+
+PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي - V44 Enterprise Edition</title><style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-width:900px;margin:auto;padding:16px}article{background:#202d40;padding:16px;border-radius:14px;margin:14px 0;overflow:auto}button,input{font:inherit;padding:10px;border:0;border-radius:8px;margin:4px}button{background:#238657;color:white}button.danger{background:#b64040}a{color:#9fc8ff}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #435069;text-align:right}small{color:#bdc9da}.warn{color:#ffcf83}
 
 :root{color-scheme:dark}body{transition:background-color .3s,color .3s}
@@ -512,12 +674,14 @@ html[data-theme="light"] td,html[data-theme="light"] th{border-color:#dce4ee!imp
 html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;color:#172438;border:1px solid #b9c9d9}
 .logout-link{display:inline-block;padding:10px 14px;background:#a52e45!important;color:white!important;border-radius:10px;text-decoration:none;font-weight:700}
 .theme-switch{display:inline-block;margin:8px 0;padding:9px 12px;background:#315174;color:white;border:0;border-radius:9px;cursor:pointer}
+.tv-btn{background:#315174;color:white;padding:6px 12px;font-size:13px;border-radius:6px;cursor:pointer;border:0;margin:2px}
+.tv-btn:hover{background:#3b628d}
 </style><script>(function(){
   function hour(){return Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kuwait',hour:'2-digit',hourCycle:'h23'}).format(new Date()))}
   function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
   window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V42 (Enterprise Edition)</h1><p class="warn">⚡ نظام التداول الآلي، الاشتراكات، الإحالات، والشارت التفاعلي مفعلة بالكامل</p>
+})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V44 (Enterprise Edition)</h1><p class="warn">⚠️ التداول الحقيقي والآلي مفعل تماماً (الحد الأقصى: 100 صفقة يومياً)</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a> | <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a></p>
@@ -552,9 +716,20 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الموافقات والطلبات</a>
 </div></article>
 
-<article><h2>📈 الشارت التفاعلي المباشر (TradingView)</h2>
-<div class="tradingview-widget-container" style="height:350px;width:100%">
-  <iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/advanced-chart/?locale=ar#%7B%22autosize%22%3Atrue%2C%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22interval%22%3A%225%22%2C%22theme%22%3A%22dark%22%2C%22style%22%3A%221%22%2C%22allow_symbol_change%22%3Atrue%2C%22support_host%22%3A%22https%3A%2F%2Fwww.tradingview.com%22%7D" style="width:100%;height:100%;"></iframe>
+<article><h2>📈 الشارت التفاعلي المباشر (اختر العملة أو السلعة)</h2>
+<div style="margin-bottom:12px; display:flex; flex-wrap:wrap; gap:4px;">
+  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:BTCUSDT')">BTCUSDT</button>
+  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:ETHUSDT')">ETHUSDT</button>
+  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:BNBUSDT')">BNBUSDT</button>
+  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:SOLUSDT')">SOLUSDT</button>
+  <button type="button" class="tv-btn" onclick="switchTV('BINANCE:XRPUSDT')">XRPUSDT</button>
+  <button type="button" class="tv-btn" onclick="switchTV('OANDA:XAUUSD')">الذهب (XAU)</button>
+  <button type="button" class="tv-btn" onclick="switchTV('OANDA:XAGUSD')">الفضة (XAG)</button>
+  <button type="button" class="tv-btn" onclick="switchTV('NYMEX:CL1!')">نفط WTI</button>
+  <button type="button" class="tv-btn" onclick="switchTV('ICEUS:BRN1!')">نفط برنت</button>
+</div>
+<div class="tradingview-widget-container" style="height:380px;width:100%">
+  <iframe id="tv-chart-iframe" scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/advanced-chart/?locale=ar#%7B%22autosize%22%3Atrue%2C%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22interval%22%3A%225%22%2C%22theme%22%3A%22dark%22%2C%22style%22%3A%221%22%2C%22allow_symbol_change%22%3Atrue%2C%22support_host%22%3A%22https%3A%2F%2Fwww.tradingview.com%22%7D" style="width:100%;height:100%;"></iframe>
 </div></article>
 
 <article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز</button></form></article>
@@ -568,11 +743,61 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <label>هدف العائد الصافي (%)</label><input type="number" name="target_roi_pct" step="0.5" value="{{prefs.target_roi_pct}}" required>
 <button>حفظ الإعدادات</button></form></article>
 
+<article><h2>📈 أسعار الأسواق المباشرة (Yahoo Finance)</h2>
+<table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state"></small></article>
+
+<article><h2>📊 أرباح وخسائر اليوم</h2><div id="daily-pnl">جاري العرض...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث أرباح وخسائر اليوم</button></form></article>
+
 <article><h2>مراكز Binance الحالية</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>الربح/الخسارة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز مفتوحة</td></tr>{% endfor %}</table></article>
 
 <article><h2>سجل الأوامر المنفذة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main>
 <script>
+function switchTV(sym){
+  const iframe=document.getElementById('tv-chart-iframe');
+  if(!iframe)return;
+  const config={
+    "autosize":true,
+    "symbol":sym,
+    "interval":"5",
+    "theme":"dark",
+    "style":"1",
+    "allow_symbol_change":true,
+    "support_host":"https://www.tradingview.com"
+  };
+  iframe.src="https://s.tradingview.com/embed-widget/advanced-chart/?locale=ar#"+encodeURIComponent(JSON.stringify(config));
+}
+
 (function(){
+ const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
+ async function refreshMarket(){
+   const tbody=document.getElementById('external-prices');
+   if(!tbody)return;
+   try{
+     const r=await fetch('/api/market-prices',{credentials:'same-origin',cache:'no-store'});
+     if(!r.ok)throw Error('price request');
+     const data=await r.json();tbody.replaceChildren();
+     for(const [name,sym] of symbols){
+       const tr=document.createElement('tr'),item=data.prices[sym];
+       const cell1=document.createElement('td');cell1.textContent=name+' '+sym;tr.appendChild(cell1);
+       const cell2=document.createElement('td');cell2.textContent=item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح';tr.appendChild(cell2);
+       const cell3=document.createElement('td');cell3.textContent=item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—';tr.appendChild(cell3);
+       tbody.appendChild(tr);
+     }
+     document.getElementById('price-state').textContent='المصدر: Yahoo Finance';
+   }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار مؤقتًا';}
+ }
+ async function refreshPnL(){
+   try{
+     const r=await fetch('/api/daily-pnl',{credentials:'same-origin',cache:'no-store'});
+     if(!r.ok)throw Error('pnl');
+     const p=await r.json();
+     document.getElementById('daily-pnl').textContent='أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم '+p.fees_funding+' USDT | الصافي '+p.net+' USDT';
+   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مسجلة بعد.';}
+ }
+ refreshMarket();refreshPnL();
+ setInterval(refreshMarket,30000);
+ setInterval(refreshPnL,120000);
+
  async function checkBan(){
    try{
      const r=await fetch('/api/binance-ban-status',{credentials:'same-origin',cache:'no-store'});
@@ -756,7 +981,7 @@ def toggle_bot():
     return redirect(url_for('home'))
 
 @app.route('/health')
-def health(): return {'status':'web_running','version':'V42','enterprise':True,'live_trading_enabled':LIVE}
+def health(): return {'status':'web_running','version':'V44','enterprise':True,'live_trading_enabled':LIVE}
 
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -870,11 +1095,5 @@ def close_position(symbol):
         flash('تم إرسال أمر إغلاق المركز بنجاح.'+warning)
     except Exception as e: flash('تعذر إغلاق المركز: '+str(e)[:200])
     return redirect(url_for('home'))
-
-def _snapshot_get(kind):
-    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-        c.execute('SELECT payload,captured_at FROM bot_verified_snapshots WHERE kind=%s',(kind,))
-        row=c.fetchone()
-    return row
 
 if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT','5000')))
