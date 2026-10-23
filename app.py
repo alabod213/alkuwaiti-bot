@@ -1,5 +1,5 @@
 """Alkuwaiti Bot - human approved USDT-M futures execution.
-Live trading enabled with ultra-conservative Binance rate limiting and external price feeds.
+Live trading & active market scans enabled within safe Binance rate limit bounds.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re, json
 from datetime import datetime, timezone
@@ -157,14 +157,14 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية.')
 
-# إعدادات فائقة الأمان لتقليل عدد الطلبات على بايننس وتجنب الحظر
-REST_MIN_INTERVAL_SECONDS = max(5.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '5.0')))
-BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','false').lower() == 'true'
-BINANCE_SCAN_INTERVAL_SECONDS = max(180, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','180')))
+# إعدادات الفحص التلقائي الآمن (مفعل بدون تجاوز حدود بايننس)
+REST_MIN_INTERVAL_SECONDS = max(3.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '3.0')))
+BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
+BINANCE_SCAN_INTERVAL_SECONDS = max(120, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','120')))
 _scan_local = threading.local()
 
-BINANCE_WEIGHT_BUDGET_1M = min(100, max(10, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '50'))))
-BINANCE_DASHBOARD_ACCOUNT_REFRESH = os.environ.get('BINANCE_DASHBOARD_ACCOUNT_REFRESH', 'false').lower() == 'true'
+BINANCE_WEIGHT_BUDGET_1M = min(200, max(20, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '150'))))
+BINANCE_DASHBOARD_ACCOUNT_REFRESH = os.environ.get('BINANCE_DASHBOARD_ACCOUNT_REFRESH', 'true').lower() == 'true'
 
 def _endpoint_weight(path, params=None):
     if path == '/fapi/v1/income': return 40
@@ -190,7 +190,7 @@ def _reserve_binance_request(path, params=None):
         c.execute("SELECT COALESCE(SUM(weight),0) FROM bot_binance_weight_events WHERE reserved_at > NOW() - INTERVAL '60 seconds'")
         used=int(c.fetchone()[0])
         if used+weight > BINANCE_WEIGHT_BUDGET_1M:
-            raise ValueError('تم تأجيل طلب Binance: ميزانية وزن الطلبات ممتلئة لحماية الحساب')
+            raise ValueError('تم تأجيل طلب Binance: ميزانية وزن الطلبات ممتلئة لحماية الاتصال')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_binance_rate_limit
                      (id INTEGER PRIMARY KEY CHECK(id=1), next_allowed TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
         c.execute('INSERT INTO bot_binance_rate_limit(id) VALUES(1) ON CONFLICT DO NOTHING')
@@ -211,7 +211,7 @@ def _observe_binance_weight(response):
     if not raw:return
     try: used=int(raw)
     except (ValueError,TypeError):return
-    threshold=max(50, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','150')))
+    threshold=max(50, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','300')))
     if used<threshold:return
     global _ban_until_ms,_ban_reason
     until=int(time.time()*1000)+120000
@@ -253,7 +253,7 @@ def signed(method,path,params=None):
 def public(path,p=None):
     _assert_binance_available()
     key=(path,tuple(sorted((str(k),str(v)) for k,v in (p or {}).items())))
-    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (120 if path=='/fapi/v1/klines' else 30)
+    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (180 if path=='/fapi/v1/klines' else 30)
     with _public_cache_lock:
         item=_public_cache.get(key)
         if item and time.monotonic()-item[0]<ttl:return item[1]
@@ -420,7 +420,7 @@ def entry_order(row):
 
 def auto_scan():
     if not BINANCE_MARKET_SCANS_ENABLED:
-        return {'status':'binance_scans_disabled','created':0,'message':'تحليل شموع Binance متوقف احترازيًا لتجنب الحظر'}
+        return {'status':'binance_scans_disabled','created':0,'message':'تحليل شموع Binance متوقف'}
     if _cooldown_state()['remaining_seconds']>0:
         return {'status':'binance_banned','created':0}
     if is_bot_paused(): return {'status':'paused','created':0}
@@ -593,7 +593,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
 <a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الطلبات والموافقات</a>
 <a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">💰 مستحقاتي وطرق الاستلام</a>
-</div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><p><small id="v37-account-status">تصفح آمن بدون استنزاف بايننس...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز يدويًا</button></form></article>
+</div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><p><small id="v37-account-status">جارٍ الاتصال المباشر بالمحرك...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز يدويًا</button></form></article>
 <article><h2>🔑 تغيير مفاتيح Binance API</h2><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form></article>
 <article><h2>⚙️ إعدادات رأس المال والرافعة</h2>
 <form method="post" action="{{url_for('save_preferences')}}">
@@ -604,13 +604,12 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <button>حفظ الإعدادات</button></form>
 </article>
 
-<article><h2>📈 أسعار الأسواق المباشرة (Yahoo Finance - مصدر خارجي آمن)</h2>
-<p>بيانات خارجية لتفادي استهلاك وزن الطلبات في بايننس بحظر IP.</p>
+<article><h2>📈 أسعار الأسواق المباشرة (Yahoo Finance - آمن للواجهة)</h2>
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state"></small></article>
 
 <article><h2>📊 أرباح وخسائر اليوم</h2><div id="daily-pnl">جاري العرض...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث أرباح وخسائر اليوم</button></form></article>
 <article><h2>الأسواق المتابعة</h2><p>BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, XAUUSDT, XAGUSDT, CLUSDT, BZUSDT</p></article>
-<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p id="auto-scan-status">⏳ الفحص التلقائي يعمل بأمان بدون استهلاك رصيد الطلبات...</p></article>
+<article><h2>🔎 الفحص التلقائي لفرص التداول (مفعل بحجم آمن)</h2><p id="auto-scan-status">⏳ الفحص الآمن لبايننس قيد التشغيل بمعدل متوازن...</p></article>
 <article id="entry-suggestions"><h2>فرص بانتظار الموافقة للتنفيذ الفعلي</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}%</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button style="background:#e11d48">موافقة وتنفيذ فوري ⚡</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص حالياً</td></tr>{% endfor %}</table></article>
 <article><h2>مراكز Binance الحالية</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز مفتوحة في آخر لقطة مؤكدة</td></tr>{% endfor %}</table></article>
 <article><h2>🕒 مراقبة تلقائية</h2>
@@ -662,7 +661,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const response=await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin',cache:'no-store'});
      const result=await response.json();
      if(!response.ok)throw Error(result.error||'تعذر الفحص');
-     if(label)label.textContent=result.status==='binance_scans_disabled'?'🛡️ الفحص معطل لمنع استهلاك وزن طلبات بايننس':(result.status==='binance_banned'?'⏳ Binance محظور مؤقتًا':'✅ تم الفحص عبر المحرك المحمي');
+     if(label)label.textContent=result.status==='binance_scans_disabled'?'الفحص التلقائي متوقف':(result.status==='binance_banned'?'⏳ Binance محظور مؤقتًا':'✅ تم الفحص التلقائي الآمن لشموع بايننس');
    }catch(e){if(label)label.textContent='⚠️ فشل الفحص: '+e.message;}
    finally{watching=false;refresh();}
  }
@@ -679,7 +678,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
        td(tr,name+' '+sym);td(tr,item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح');
        td(tr,item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—');tbody.appendChild(tr);
      }
-     document.getElementById('price-state').textContent='مصدر الأسعار: Yahoo Finance (خارجي آمن) | آخر تحديث: '+(data.checked_at?new Date(data.checked_at).toLocaleTimeString('ar-KW'):'غير متاح');
+     document.getElementById('price-state').textContent='المصدر: Yahoo Finance | آخر تحديث: '+(data.checked_at?new Date(data.checked_at).toLocaleTimeString('ar-KW'):'غير متاح');
    }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار مؤقتًا';}
  }
  async function refreshPnL(){
@@ -690,8 +689,8 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      document.getElementById('daily-pnl').textContent='أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم وتمويل '+p.fees_funding+' USDT | الصافي '+p.net+' USDT';
    }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مؤكدة بعد.';}
  }
- refreshMarket();refreshPnL();setInterval(refreshMarket,20000);setInterval(refreshPnL,60000);
- refresh();trigger();setInterval(refresh,30000);setInterval(trigger,180000);
+ refreshMarket();refreshPnL();setInterval(refreshMarket,25000);setInterval(refreshPnL,60000);
+ refresh();trigger();setInterval(refresh,30000);setInterval(trigger,120000);
 })();
 </script><script>(function(){
  const bal=document.getElementById('v37-balance');
@@ -707,7 +706,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      if(!r.ok)throw Error('تعذر قراءة الحساب');
      const x=await r.json();
      if(x.balance!==null){bal.textContent=x.balance+' USDT';at.textContent='آخر لقطة محفوظة: '+new Date(x.captured_at).toLocaleString('ar-KW');}
-     else{bal.textContent='بانتظار أول تحديث يدوي';}
+     else{bal.textContent='بانتظار التحديث...';}
      status.textContent=x.message||'حالة الحساب';
    }catch(e){status.textContent='تعذر التحديث مؤقتًا';}
    finally{busy=false;}
@@ -717,7 +716,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 </script><script>(function(){
  let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
  if(!msg||!timer)return;
- function render(){if(!until){timer.textContent='لا يوجد حظر مسجل';msg.textContent='الاتصال آمن بنسبة 100%.';return}
+ function render(){if(!until){timer.textContent='لا يوجد حظر مسجل';msg.textContent='الاتصال سليم بنسبة 100%.';return}
  const seconds=Math.max(0,Math.ceil((until-Date.now())/1000));
  const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
  timer.textContent=seconds?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:'انتهى الوقت';
@@ -787,7 +786,7 @@ def account_auth(f):
 def market_prices():
     with _price_lock:
         now=time.monotonic()
-        if now-_external_cache['at']>=20:
+        if now-_external_cache['at']>=25:
             result={}
             for symbol,ticker in YAHOO_TICKERS.items():
                 try:
@@ -855,7 +854,7 @@ def _daily_pnl_from_binance():
             'losses':fmt(losses),'fees_funding':fmt(totals['COMMISSION']+totals['FUNDING_FEE']),
             'net':fmt(sum(totals.values(),D('0')))}
 
-BINANCE_AUTO_ACCOUNT_ENABLED=os.environ.get('BINANCE_AUTO_ACCOUNT_ENABLED','false').lower()=='true'
+BINANCE_AUTO_ACCOUNT_ENABLED=os.environ.get('BINANCE_AUTO_ACCOUNT_ENABLED','true').lower()=='true'
 _v37_refresh_lock=threading.Lock()
 _v37_last_check=0.0
 
@@ -868,7 +867,7 @@ def _v37_auto_refresh():
     try:
         _assert_binance_available()
         if not BINANCE_AUTO_ACCOUNT_ENABLED:return
-        if _snapshot_reserve('v37_auto_account',1200):
+        if _snapshot_reserve('v37_auto_account',600):
             try:
                 account=signed('GET','/fapi/v2/account')
                 positions_data=signed('GET','/fapi/v2/positionRisk')
@@ -877,7 +876,7 @@ def _v37_auto_refresh():
                 _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
             except Exception as e:
                 logging.warning('V37 automatic account update deferred: %s',str(e)[:140])
-        if _snapshot_reserve('v37_auto_pnl',3600):
+        if _snapshot_reserve('v37_auto_pnl',1800):
             try:_snapshot_put('pnl',_daily_pnl_from_binance())
             except Exception as e:logging.warning('V37 automatic PnL update deferred: %s',str(e)[:140])
     except Exception as e:
