@@ -487,17 +487,22 @@ def monitor_close_suggestions():
                     logging.exception('Auto close failed for %s', symbol)
     return {'status':'ok'}
 
-@app.route('/tasks/scan',methods=['POST'])
+@app.route('/tasks/scan', methods=['POST'])
 def scheduled_scan():
-    expected=os.environ.get('SCAN_CRON_TOKEN','')
-    provided=request.headers.get('X-Scan-Token','')
-    if not expected or not hmac.compare_digest(expected,provided):
-        return {'error':'unauthorized'},401
+    expected = str(os.environ.get('SCAN_CRON_TOKEN', '')).strip()
+    provided = str(request.headers.get('X-Scan-Token', '')).strip()
+    
+    # تحويل القيم إلى بايتات (Bytes) لمنع خطأ non-ASCII تماماً عند المقارنة
+    expected_bytes = expected.encode('utf-8', errors='ignore')
+    provided_bytes = provided.encode('utf-8', errors='ignore')
+    
+    if not expected_bytes or not provided_bytes or not hmac.compare_digest(expected_bytes, provided_bytes):
+        return {'error': 'unauthorized'}, 401
     try:
         return auto_scan()
     except Exception:
         logging.exception('Scheduled scan failed')
-        return {'error':'scan failed'},500
+        return {'error': 'scan failed'}, 500
 
 YAHOO_TICKERS={'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','BNBUSDT':'BNB-USD','SOLUSDT':'SOL-USD','XRPUSDT':'XRP-USD','XAUUSDT':'GC=F','XAGUSDT':'SI=F','CLUSDT':'CL=F','BZUSDT':'BZ=F'}
 _external_cache={'at':0.0,'checked_at':None,'prices':{}}
