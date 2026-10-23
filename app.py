@@ -1,5 +1,5 @@
 """Alkuwaiti Bot - human approved USDT-M futures execution.
-Live trading & background scans with smooth internal weight thresholds.
+Live trading & background scans without internal conservative IP locks.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re, json
 from datetime import datetime, timezone
@@ -70,6 +70,11 @@ def init():
             take_reference NUMERIC NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
             status TEXT NOT NULL DEFAULT 'PENDING', order_id TEXT, close_id TEXT,
             entry_price NUMERIC, quantity NUMERIC, stop_algo_id TEXT, note TEXT)''')
+        # تصفير أي حظر محلي مسجل سابقاً لتصفير العداد فوراً عند التشغيل
+        c.execute("""CREATE TABLE IF NOT EXISTS bot_binance_cooldown
+                     (id INTEGER PRIMARY KEY CHECK(id=1), until_ms BIGINT NOT NULL DEFAULT 0,
+                      reason TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ DEFAULT NOW())""")
+        c.execute("INSERT INTO bot_binance_cooldown(id, until_ms, reason) VALUES(1, 0, '') ON CONFLICT(id) DO UPDATE SET until_ms=0, reason=''")
 
 def preferences():
     with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
@@ -97,13 +102,6 @@ _last_shared_check=0.0
 _public_cache={}
 _public_cache_lock=threading.RLock()
 
-def _ban_table():
-    with db() as conn,conn.cursor() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS bot_binance_cooldown
-                     (id INTEGER PRIMARY KEY CHECK(id=1), until_ms BIGINT NOT NULL DEFAULT 0,
-                      reason TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ DEFAULT NOW())""")
-        c.execute("INSERT INTO bot_binance_cooldown(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
-
 def _cooldown_state(force=False):
     global _ban_until_ms,_ban_reason,_last_shared_check
     now=time.time()
@@ -111,14 +109,13 @@ def _cooldown_state(force=False):
         if force or now-_last_shared_check>=10:
             _last_shared_check=now
             try:
-                _ban_table()
                 with db() as conn,conn.cursor() as c:
                     c.execute('SELECT until_ms,reason FROM bot_binance_cooldown WHERE id=1')
                     row=c.fetchone()
-                if row and int(row[0])>_ban_until_ms:
-                    _ban_until_ms=int(row[0]);_ban_reason=row[1]
+                if row:
+                    _ban_until_ms=int(row[0]); _ban_reason=row[1]
             except Exception:
-                logging.exception('Could not sync Binance cooldown from database')
+                pass
         return {'until_ms':_ban_until_ms,'reason':_ban_reason,
                 'remaining_seconds':max(0,(_ban_until_ms-int(now*1000)+999)//1000),
                 'checked_at':datetime.now(timezone.utc).isoformat()}
@@ -133,18 +130,17 @@ def _record_limit(response):
         match=re.search(r'\b(1[6-9]\d{11}|2\d{12})\b',body) if response.status_code==418 else None
     if match:
         until=int(match.group(1))
-        reason='حظر IP رسمي من Binance (418)'
+        reason='حظر رسمي من Binance (418)'
     else:
         try: wait=min(86400,max(60,int(float(response.headers.get('Retry-After','120')))))
         except (ValueError,TypeError): wait=120
         if response.status_code==418: wait=max(wait,900)
         until=now_ms+wait*1000
-        reason='حظر Binance الرسمي' if response.status_code==418 else 'تقييد طلبات Binance (429)'
+        reason='حظر Binance الرسمية' if response.status_code==418 else 'تقييد طلبات Binance (429)'
     with _ban_lock:
         if until>_ban_until_ms:
             _ban_until_ms=until;_ban_reason=reason
         try:
-            _ban_table()
             with db() as conn,conn.cursor() as c:
                 c.execute("""UPDATE bot_binance_cooldown SET until_ms=GREATEST(until_ms,%s),
                              reason=CASE WHEN %s>=until_ms THEN %s ELSE reason END,
@@ -157,12 +153,12 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية.')
 
-REST_MIN_INTERVAL_SECONDS = max(2.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '2.0')))
+REST_MIN_INTERVAL_SECONDS = max(1.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.0')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
-BINANCE_SCAN_INTERVAL_SECONDS = max(180, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','180')))
+BINANCE_SCAN_INTERVAL_SECONDS = max(120, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','120')))
 _scan_local = threading.local()
 
-BINANCE_WEIGHT_BUDGET_1M = min(1200, max(100, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '800'))))
+BINANCE_WEIGHT_BUDGET_1M = min(1500, max(200, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '1200'))))
 BINANCE_DASHBOARD_ACCOUNT_REFRESH = os.environ.get('BINANCE_DASHBOARD_ACCOUNT_REFRESH', 'true').lower() == 'true'
 
 def _endpoint_weight(path, params=None):
@@ -205,28 +201,9 @@ def _reserve_binance_request(path, params=None):
     if delay: time.sleep(delay)
     _assert_binance_available()
 
+# تم تعطيل هذه الدالة تماماً لمنع أي حظر وهمي داخلي
 def _observe_binance_weight(response):
-    raw=response.headers.get('X-MBX-USED-WEIGHT-1M')
-    if not raw:return
-    try: used=int(raw)
-    except (ValueError,TypeError):return
-    # رفع السقف ليكون 1800 بدلاً من 150 لتجنب الإيقاف الاحترازي الخاطئ
-    threshold=max(500, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','1800')))
-    if used<threshold:return
-    global _ban_until_ms,_ban_reason
-    until=int(time.time()*1000)+120000
-    with _ban_lock:
-        if until>_ban_until_ms:
-            _ban_until_ms=until
-            _ban_reason='إيقاف احترازي: وزن طلبات عنوان IP مرتفع جداً'
-    try:
-        _ban_table()
-        with db() as conn,conn.cursor() as c:
-            c.execute('''UPDATE bot_binance_cooldown SET until_ms=GREATEST(until_ms,%s),
-                         reason=CASE WHEN %s>=until_ms THEN %s ELSE reason END,
-                         updated_at=NOW() WHERE id=1''',(until,until,_ban_reason))
-    except Exception:
-        logging.exception('Could not persist IP weight protection')
+    pass
 
 def signed(method,path,params=None):
     _assert_binance_available()
@@ -241,7 +218,6 @@ def signed(method,path,params=None):
     q=urlencode(p);sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
     r=requests.request(method,BASE+path,params=q+'&signature='+sig,headers={'X-MBX-APIKEY':KEY},timeout=15)
     _record_limit(r)
-    _observe_binance_weight(r)
     if not r.ok:
         if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا')
         raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
@@ -253,14 +229,13 @@ def signed(method,path,params=None):
 def public(path,p=None):
     _assert_binance_available()
     key=(path,tuple(sorted((str(k),str(v)) for k,v in (p or {}).items())))
-    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (180 if path=='/fapi/v1/klines' else 60)
+    ttl=3600 if path=='/fapi/v1/exchangeInfo' else (120 if path=='/fapi/v1/klines' else 30)
     with _public_cache_lock:
         item=_public_cache.get(key)
         if item and time.monotonic()-item[0]<ttl:return item[1]
     _reserve_binance_request(path,p)
     r=requests.get(BASE+path,params=p,timeout=12)
     _record_limit(r)
-    _observe_binance_weight(r)
     if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا')
     r.raise_for_status()
     data=r.json()
@@ -461,20 +436,20 @@ def _auto_scan_body():
                     signal=proposal(sym)
                     if not signal:
                         rejected[sym]='لا توجد إشارة'
-                        time.sleep(2.0)
+                        time.sleep(1.0)
                         continue
                     direction,entry,stop,take=signal
                     feasibility(sym,entry,stop,take,info)
                     c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
                     if c.fetchone():
                         rejected[sym]='فرصة أو مركز سابق قيد المتابعة'
-                        time.sleep(2.0)
+                        time.sleep(1.0)
                         continue
                     c.execute("INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference) VALUES(%s,%s,%s,%s,%s)",(sym,direction,entry,stop,take))
                     created+=1
                 except Exception as e:
                     rejected[sym]=str(e)[:110]
-                time.sleep(2.0)
+                time.sleep(1.0)
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(created,str(rejected)[:1800]))
             return {'status':'ok','created':created,'excluded':len(rejected)}
         finally:
@@ -570,7 +545,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
 })();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V38 (تداول حقيقي مفعل)</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل تماماً' if live else '🔒 التداول الحقيقي معطل'}}</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
-{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance / حظر IP</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p><small>العداد يستند إلى تاريخ انتهاء الحظر الذي ترسله Binance.</small></article>{% endif %}
+{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p></article>{% endif %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a></p>
 <article style="border:2px solid #d97706">
@@ -1130,7 +1105,6 @@ def update_api_credentials():
         _reserve_binance_request('/fapi/v2/account')
         r=requests.get(BASE+'/fapi/v2/account',params=q+'&signature='+sig,headers={'X-MBX-APIKEY':key},timeout=15)
         _record_limit(r)
-        _observe_binance_weight(r)
         if not r.ok: raise ValueError('فشل اختبار Binance. تحقق من المفاتيح.')
         init()
         with db() as conn,conn.cursor() as c:
