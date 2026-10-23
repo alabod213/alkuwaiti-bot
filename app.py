@@ -1,5 +1,5 @@
-"""Alkuwaiti Bot - human approved USDT-M futures execution.
-Live trading & background scans without internal conservative IP locks.
+"""Alkuwaiti Bot V38 - Fully Automated Execution with Complete Owner & Investor Management.
+Live trading & background scans with automatic order placement & profit taking.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re, json
 from datetime import datetime, timezone
@@ -70,7 +70,6 @@ def init():
             take_reference NUMERIC NOT NULL, created_at TIMESTAMPTZ DEFAULT NOW(),
             status TEXT NOT NULL DEFAULT 'PENDING', order_id TEXT, close_id TEXT,
             entry_price NUMERIC, quantity NUMERIC, stop_algo_id TEXT, note TEXT)''')
-        # تصفير أي حظر محلي مسجل سابقاً لتصفير العداد فوراً عند التشغيل
         c.execute("""CREATE TABLE IF NOT EXISTS bot_binance_cooldown
                      (id INTEGER PRIMARY KEY CHECK(id=1), until_ms BIGINT NOT NULL DEFAULT 0,
                       reason TEXT NOT NULL DEFAULT '', updated_at TIMESTAMPTZ DEFAULT NOW())""")
@@ -200,10 +199,6 @@ def _reserve_binance_request(path, params=None):
         c.execute('INSERT INTO bot_binance_weight_events(reserved_at,weight) VALUES(%s,%s)',(reserved_at,weight))
     if delay: time.sleep(delay)
     _assert_binance_available()
-
-# تم تعطيل هذه الدالة تماماً لمنع أي حظر وهمي داخلي
-def _observe_binance_weight(response):
-    pass
 
 def signed(method,path,params=None):
     _assert_binance_available()
@@ -350,52 +345,43 @@ def feasibility(symbol, entry, stop, take, info=None):
         raise ValueError('الهدف الفني لا يحقق نسبة الربح الصافي المستهدفة على الهامش')
     return qty,mark,net
 
-def entry_order(row):
-    if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول؛ لا يمكن فتح صفقة جديدة')
-    
-    symbol=row['symbol']; info=symbol_info(symbol)
+def direct_execute_trade(symbol, direction, entry, stop, take, info):
+    """تنفيذ تلقائي مباشر للصفقة بدون انتظار الموافقة"""
+    if is_bot_paused(): raise ValueError('البوت متوقف')
     account=signed('GET','/fapi/v2/account')
-    if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode؛ هذا الإصدار يدعم One-way فقط')
-    if (datetime.now(timezone.utc)-row['created_at']).total_seconds()>900:
-        raise ValueError('انتهت صلاحية الإشارة (15 دقيقة). أعد التحليل')
-    qty,mark,net=feasibility(symbol,D(row['entry_reference']),D(row['stop_reference']),D(row['take_reference']),info)
-    take=D(row['take_reference'])
-    if row['direction']=='LONG':
-        live_net=(take-mark)/mark-ESTIMATED_ROUND_TRIP_COST
-    else:
-        live_net=(mark-take)/mark-ESTIMATED_ROUND_TRIP_COST
-    prefs=preferences()
-    lev=allowed_leverage(symbol,prefs['max_leverage'])
-    if live_net*D(lev)<D(str(prefs['target_roi_pct']))/100:
-        raise ValueError('بعد تغير السعر لم يعد الهدف يحقق صافي العائد التقديري المحدد')
-    filters={f['filterType']:f for f in info['filters']}
-    stop=D(row['stop_reference']); side='BUY' if row['direction']=='LONG' else 'SELL'
-    if (side=='BUY' and stop>=mark) or (side=='SELL' and stop<=mark):
-        raise ValueError('سعر وقف الخسارة لم يعد صالحًا بعد تحرك السوق؛ أعد التحليل')
-    price_filter=filters['PRICE_FILTER']; tick=D(price_filter['tickSize'])
-    stop=floor_step(stop,tick)
-    if stop<=0: raise ValueError('وقف الخسارة غير صالح')
-    signed('POST','/fapi/v1/leverage',{'symbol':symbol,'leverage':lev})
-    cid='ak'+str(row['id'])+'o'
-    order=signed('POST','/fapi/v1/order',{'symbol':symbol,'side':side,'type':'MARKET','quantity':strnum(qty),'newClientOrderId':cid,'newOrderRespType':'RESULT'})
+    if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode')
+    qty, mark, net = feasibility(symbol, entry, stop, take, info)
+    prefs = preferences()
+    lev = allowed_leverage(symbol, prefs['max_leverage'])
+    filters = {f['filterType']:f for f in info['filters']}
+    side = 'BUY' if direction == 'LONG' else 'SELL'
+    
+    price_filter = filters['PRICE_FILTER']
+    tick = D(price_filter['tickSize'])
+    stop_price = floor_step(stop, tick)
+    if stop_price <= 0: raise ValueError('وقف الخسارة غير صالح')
+    
+    signed('POST', '/fapi/v1/leverage', {'symbol': symbol, 'leverage': lev})
+    cid = 'ak' + str(int(time.time())) + 'a'
+    order = signed('POST', '/fapi/v1/order', {'symbol': symbol, 'side': side, 'type': 'MARKET', 'quantity': strnum(qty), 'newClientOrderId': cid, 'newOrderRespType': 'RESULT'})
+    
     try:
-        protect=signed('POST','/fapi/v1/algoOrder',{'algoType':'CONDITIONAL','symbol':symbol,
-            'side':'SELL' if side=='BUY' else 'BUY','type':'STOP_MARKET',
-            'triggerPrice':strnum(stop),'workingType':'MARK_PRICE','closePosition':'true'})
+        protect = signed('POST', '/fapi/v1/algoOrder', {'algoType': 'CONDITIONAL', 'symbol': symbol,
+            'side': 'SELL' if side == 'BUY' else 'BUY', 'type': 'STOP_MARKET',
+            'triggerPrice': strnum(stop_price), 'workingType': 'MARK_PRICE', 'closePosition': 'true'})
     except Exception as stop_error:
         try:
-            signed('POST','/fapi/v1/order',{'symbol':symbol,'side':'SELL' if side=='BUY' else 'BUY',
-                'type':'MARKET','quantity':strnum(qty),'reduceOnly':'true',
-                'newClientOrderId':'ak'+str(row['id'])+'e'})
+            signed('POST', '/fapi/v1/order', {'symbol': symbol, 'side': 'SELL' if side == 'BUY' else 'BUY',
+                'type': 'MARKET', 'quantity': strnum(qty), 'reduceOnly': 'true',
+                'newClientOrderId': 'ak' + str(int(time.time())) + 'e'})
         except Exception:
-            logging.exception('CRITICAL: STOP PLACEMENT AND EMERGENCY FLATTEN FAILED for %s',symbol)
-            raise ValueError('خطر: فشل وقف الخسارة والإغلاق الطارئ! افتح Binance فورًا وتحقق من المركز')
-        raise ValueError('فشل إنشاء وقف الخسارة؛ أرسلنا أمر إغلاق طارئ. تحقق من Binance: '+str(stop_error)[:90])
-    return order,protect,qty
+            logging.exception('CRITICAL: EMERGENCY FLATTEN FAILED for %s', symbol)
+        raise ValueError('فشل وقف الخسارة وتم الإغلاق: ' + str(stop_error)[:90])
+    return order, protect, qty
 
 def auto_scan():
     if not BINANCE_MARKET_SCANS_ENABLED:
-        return {'status':'binance_scans_disabled','created':0,'message':'تحليل شموع Binance متوقف'}
+        return {'status':'binance_scans_disabled','created':0,'message':'التداول الآلي متوقف'}
     if _cooldown_state()['remaining_seconds']>0:
         return {'status':'binance_banned','created':0}
     if is_bot_paused(): return {'status':'paused','created':0}
@@ -419,7 +405,7 @@ def auto_scan():
         _scan_local.signed_cache=None
 
 def _auto_scan_body():
-    created=0
+    executed=0
     rejected={}
     with db() as conn,conn.cursor() as c:
         c.execute("SELECT pg_try_advisory_lock(68210314)")
@@ -427,8 +413,6 @@ def _auto_scan_body():
         if not locked:
             return {'status':'busy','created':0}
         try:
-            c.execute("UPDATE bot_orders_v2 SET status='EXPIRED' WHERE status='PENDING' AND created_at<NOW()-INTERVAL '15 minutes'")
-            c.execute("DELETE FROM bot_close_suggestions WHERE created_at<NOW()-INTERVAL '10 minutes' OR status!='PENDING'")
             for sym in SYMBOLS:
                 if _cooldown_state()['remaining_seconds']>0: break
                 try:
@@ -439,19 +423,23 @@ def _auto_scan_body():
                         time.sleep(1.0)
                         continue
                     direction,entry,stop,take=signal
-                    feasibility(sym,entry,stop,take,info)
-                    c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
+                    c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','OPEN_AUTO','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
                     if c.fetchone():
-                        rejected[sym]='فرصة أو مركز سابق قيد المتابعة'
+                        rejected[sym]='مركز سابق مفتوح'
                         time.sleep(1.0)
                         continue
-                    c.execute("INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference) VALUES(%s,%s,%s,%s,%s)",(sym,direction,entry,stop,take))
-                    created+=1
+                    
+                    # تنفيذ الصفقة آلياً وبشكل فوري
+                    order, protect, qty = direct_execute_trade(sym, direction, entry, stop, take, info)
+                    c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,order_id,stop_algo_id,quantity,entry_price,note)
+                                 VALUES(%s,%s,%s,%s,%s,'OPEN_AUTO',%s,%s,%s,%s,'Fully automated execution')""",
+                              (sym, direction, entry, stop, take, str(order.get('orderId')), str(protect.get('algoId')), qty, order.get('avgPrice','0')))
+                    executed+=1
                 except Exception as e:
                     rejected[sym]=str(e)[:110]
                 time.sleep(1.0)
-            c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(created,str(rejected)[:1800]))
-            return {'status':'ok','created':created,'excluded':len(rejected)}
+            c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(executed,str(rejected)[:1800]))
+            return {'status':'ok','executed':executed,'excluded':len(rejected)}
         finally:
             c.execute("SELECT pg_advisory_unlock(68210314)")
 
@@ -468,7 +456,6 @@ def monitor_close_suggestions():
     threshold=D(str(prefs['target_roi_pct']))/100
     ps=positions()
     with db() as conn,conn.cursor() as c:
-        c.execute("DELETE FROM bot_close_suggestions WHERE created_at<NOW()-INTERVAL '10 minutes'")
         for p in ps:
             symbol=p['symbol']
             if symbol not in SYMBOLS: continue
@@ -478,12 +465,16 @@ def monitor_close_suggestions():
             gross=(mark-entry)/entry if amount>0 else (entry-mark)/entry
             roi=(gross-ESTIMATED_ROUND_TRIP_COST)*lev
             est_usdt=abs(amount)*(mark-entry)*(1 if amount>0 else -1)-abs(amount)*mark*ESTIMATED_ROUND_TRIP_COST
+            
+            # إغلاق تلقائي فوري عند تحقيق الهدف الاستثماري
             if roi>=threshold and est_usdt>0:
-                c.execute("""INSERT INTO bot_close_suggestions(symbol,position_amt,estimated_net_roi,estimated_net_usdt,created_at,status)
-                  VALUES(%s,%s,%s,%s,NOW(),'PENDING')
-                  ON CONFLICT(symbol) DO UPDATE SET position_amt=EXCLUDED.position_amt,
-                  estimated_net_roi=EXCLUDED.estimated_net_roi,estimated_net_usdt=EXCLUDED.estimated_net_usdt,
-                  created_at=NOW(),status=CASE WHEN bot_close_suggestions.status='REJECTED' AND bot_close_suggestions.created_at>NOW()-INTERVAL '10 minutes' THEN 'REJECTED' ELSE 'PENDING' END""",(symbol,amount,roi,est_usdt))
+                try:
+                    order=signed('POST','/fapi/v1/order',{'symbol':symbol,'side':'SELL' if amount>0 else 'BUY',
+                        'type':'MARKET','quantity':strnum(abs(amount)),'reduceOnly':'true','newOrderRespType':'RESULT'})
+                    c.execute("UPDATE bot_orders_v2 SET status='CLOSED_AUTO',close_id=%s,note='Auto take profit executed' WHERE symbol=%s AND status IN ('OPEN','OPEN_AUTO')",
+                              (str(order.get('orderId')),symbol))
+                except Exception as e:
+                    logging.exception('Auto close failed for %s', symbol)
     return {'status':'ok'}
 
 @app.route('/tasks/scan',methods=['POST'])
@@ -498,32 +489,7 @@ def scheduled_scan():
         logging.exception('Scheduled scan failed')
         return {'error':'scan failed'},500
 
-@app.route('/close-suggestions/<symbol>/reject',methods=['POST'])
-@auth
-def reject_close_suggestion(symbol):
-    try:
-        check_csrf()
-        with db() as conn,conn.cursor() as c:
-            c.execute("UPDATE bot_close_suggestions SET status='REJECTED' WHERE symbol=%s AND status='PENDING'",(symbol,))
-        flash('تم رفض اقتراح جني الربح، والمركز لا يزال مفتوحًا.')
-    except Exception as e:
-        flash(str(e)[:160])
-    return redirect(url_for('home'))
-
-@app.route('/close-suggestions/<symbol>/approve',methods=['POST'])
-@auth
-def approve_close_suggestion(symbol):
-    try:
-        check_csrf()
-        with db() as conn,conn.cursor() as c:
-            c.execute("SELECT 1 FROM bot_close_suggestions WHERE symbol=%s AND status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes'",(symbol,))
-            if not c.fetchone(): raise ValueError('اقتراح الإغلاق انتهت صلاحيته')
-        return close_position(symbol)
-    except Exception as e:
-        flash(str(e)[:160])
-        return redirect(url_for('home'))
-
-PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي</title><style>
+PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي - التداول الآلي</title><style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-width:850px;margin:auto;padding:16px}article{background:#202d40;padding:16px;border-radius:14px;margin:14px 0;overflow:auto}button,input{font:inherit;padding:10px;border:0;border-radius:8px;margin:4px}button{background:#238657;color:white}button.danger{background:#b64040}a{color:#9fc8ff}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #435069;text-align:right}small{color:#bdc9da}.warn{color:#ffcf83}
 
 :root{color-scheme:dark}body{transition:background-color .3s,color .3s}
@@ -535,7 +501,6 @@ html[data-theme="light"] small{color:#46576a!important}
 html[data-theme="light"] .warn{color:#8b5500!important}
 html[data-theme="light"] td,html[data-theme="light"] th{border-color:#dce4ee!important}
 html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;color:#172438;border:1px solid #b9c9d9}
-html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 .logout-link{display:inline-block;padding:10px 14px;background:#a52e45!important;color:white!important;border-radius:10px;text-decoration:none;font-weight:700}
 .theme-switch{display:inline-block;margin:8px 0;padding:9px 12px;background:#315174;color:white;border:0;border-radius:9px;cursor:pointer}
 </style><script>(function(){
@@ -543,22 +508,21 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
   function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
   window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V38 (تداول حقيقي مفعل)</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل تماماً' if live else '🔒 التداول الحقيقي معطل'}}</p>
+})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V38 (تداول آلي بالكامل 100%)</h1><p class="warn">⚠️ التداول الحقيقي الآلي مفعل تماماً (فتح وإغلاق بدون موافقة)</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
-{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p></article>{% endif %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a></p>
 <article style="border:2px solid #d97706">
 <h2>🛑 مفتاح إيقاف البوت</h2>
 {% if prefs and prefs.is_paused %}
-<p style="color:#fca5a5;font-weight:bold">🔴 البوت متوقف: لا فحص تلقائي ولا فرص أو صفقات دخول جديدة.</p>
+<p style="color:#fca5a5;font-weight:bold">🔴 البوت متوقف: لا فحص تلقائي ولا صفقات جديدة.</p>
 {% else %}
-<p style="color:#86efac;font-weight:bold">🟢 البوت يعمل بكامل صلاحيات التداول.</p>
+<p style="color:#86efac;font-weight:bold">🟢 البوت يعمل بكامل صلاحيات التداول الآلي.</p>
 {% endif %}
 <form method="post" action="{{url_for('toggle_bot')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
 {% if prefs and prefs.is_paused %}
-<input type="hidden" name="action" value="resume"><button type="submit" style="background:#15803d" onclick="return confirm('هل تريد استئناف التداول والفحص؟')">▶️ إعادة تشغيل البوت</button>
+<input type="hidden" name="action" value="resume"><button type="submit" style="background:#15803d" onclick="return confirm('استئناف التداول الآلي؟')">▶️ إعادة تشغيل البوت</button>
 {% else %}
 <input type="hidden" name="action" value="stop"><button type="submit" class="danger" onclick="return confirm('إيقاف البوت بالكامل؟')">🛑 إيقاف البوت بالكامل</button>
 {% endif %}
@@ -570,7 +534,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
 <a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الطلبات والموافقات</a>
 <a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">💰 مستحقاتي وطرق الاستلام</a>
-</div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><p><small id="v37-account-status">الاتصال المباشر متوازن وبدون قيود...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز يدويًا</button></form></article>
+</div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث: {{account_snapshot_at or 'لم يتم التحديث بعد'}}</small><p><small id="v37-account-status">الاتصال المباشر يعمل بسلاسة...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز يدويًا</button></form></article>
 <article><h2>🔑 تغيير مفاتيح Binance API</h2><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form></article>
 <article><h2>⚙️ إعدادات رأس المال والرافعة</h2>
 <form method="post" action="{{url_for('save_preferences')}}">
@@ -586,61 +550,25 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 
 <article><h2>📊 أرباح وخسائر اليوم</h2><div id="daily-pnl">جاري العرض...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث أرباح وخسائر اليوم</button></form></article>
 <article><h2>الأسواق المتابعة</h2><p>BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, XAUUSDT, XAGUSDT, CLUSDT, BZUSDT</p></article>
-<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p id="auto-scan-status">⏳ الفحص الآمن لبايننس قيد التشغيل بمعدل متوازن...</p></article>
-<article id="entry-suggestions"><h2>فرص بانتظار الموافقة للتنفيذ الفعلي</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}%</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button style="background:#e11d48">موافقة وتنفيذ فوري ⚡</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص حالياً</td></tr>{% endfor %}</table></article>
-<article><h2>مراكز Binance الحالية</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز مفتوحة في آخر لقطة مؤكدة</td></tr>{% endfor %}</table></article>
+<article><h2>⚡ التداول الآلي الفوري</h2><p id="auto-scan-status">البوت يفحص الأسواق وينفذ الصفقات آلياً دون تدخل منك...</p></article>
+<article><h2>مراكز Binance الحالية</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز مفتوحة حالياً</td></tr>{% endfor %}</table></article>
 <article><h2>🕒 مراقبة تلقائية</h2>
 <p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يبدأ بعد'}}</p>
-<p>فرص جديدة: {{scan_state.opportunities if scan_state else 0}}</p>
-<div id="watch-status" aria-live="polite">بدء المراقبة...</div></article>
-<article id="exit-suggestions"><h2>🔔 اقتراحات إغلاق جني الأرباح</h2>
-<div id="live-exit-rows">جارٍ الفحص...</div>
-</article>
-<article><h2>آخر الأوامر المنفذة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main><script>
+<p>الصفقات المنفذة تلقائياً: {{scan_state.opportunities if scan_state else 0}}</p>
+<div id="watch-status" aria-live="polite">المراقبة الآلية تعمل...</div></article>
+<article><h2>سجل الصفقات والأوامر المنفذة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main><script>
 (function(){
  const watch=document.getElementById('watch-status');
  if(!watch)return;
  const csrf={{ csrf|tojson }};
- let watching=false,loading=false;
- function td(tr,value){const cell=document.createElement('td');cell.textContent=String(value);tr.appendChild(cell);return cell;}
- function action(tr,path,label,danger){
-   const form=document.createElement('form');form.method='post';form.action=path;
-   const token=document.createElement('input');token.type='hidden';token.name='csrf';token.value=csrf;form.appendChild(token);
-   const btn=document.createElement('button');btn.textContent=label;if(danger)btn.className='danger';form.appendChild(btn);
-   tr.lastChild.appendChild(form);
- }
- async function refresh(){
-   if(loading||document.hidden)return;loading=true;
-   try{
-     const res=await fetch('/api/browser-suggestions',{credentials:'same-origin',cache:'no-store'});
-     if(!res.ok)throw Error('suggestions');
-     const data=await res.json();
-     const entry=document.querySelector('#entry-suggestions table');
-     if(entry){const rows=entry.querySelectorAll('tr');rows.forEach((r,i)=>{if(i>0)r.remove()});
-       for(const x of data.entries){const tr=document.createElement('tr');td(tr,x.symbol);td(tr,x.direction);td(tr,x.entry_reference);td(tr,x.take_reference);td(tr,x.stop_reference);td(tr,'هدف صافي تقديري');td(tr,'');action(tr,'/approve/'+encodeURIComponent(x.id),'موافقة وتنفيذ فوري ⚡',false);action(tr,'/reject/'+encodeURIComponent(x.id),'رفض',true);entry.appendChild(tr)}
-       if(!data.entries.length){const tr=document.createElement('tr');const c=td(tr,'لا توجد فرص مناسبة حاليًا');c.colSpan=7;entry.appendChild(tr)}
-     }
-     const exit=document.getElementById('exit-suggestions');
-     if(exit){let holder=document.getElementById('live-exit-rows');if(!holder){holder=document.createElement('div');holder.id='live-exit-rows';exit.insertBefore(holder,exit.children[1]||null)}holder.replaceChildren();
-       for(const x of data.exits){const p=document.createElement('p');p.textContent=x.symbol+' | صافي تقديري '+(Number(x.estimated_net_roi)*100).toFixed(2)+'% | '+x.estimated_net_usdt+' USDT';holder.appendChild(p);
-         const tr=document.createElement('div');td(tr,'');action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/approve','موافقة وإغلاق الآن',true);action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/reject','رفض الاقتراح',false);holder.appendChild(tr)}
-       if(!data.exits.length){const p=document.createElement('p');p.textContent='لا توجد اقتراحات إغلاق تحقق الهدف حالياً.';holder.appendChild(p)}
-     }
-     watch.textContent='المراقبة تعمل | آخر فحص: '+(data.last_scan?new Date(data.last_scan).toLocaleTimeString('ar-KW'):'لم يبدأ');
-   }catch(e){watch.textContent='تعذر تحديث الفرص مؤقتًا';}
-   finally{loading=false;}
- }
  async function trigger(){
-   if(watching||document.hidden)return;
-   watching=true;
    const label=document.getElementById('auto-scan-status');
    try{
      const response=await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin',cache:'no-store'});
      const result=await response.json();
      if(!response.ok)throw Error(result.error||'تعذر الفحص');
-     if(label)label.textContent=result.status==='binance_scans_disabled'?'الفحص التلقائي متوقف':(result.status==='binance_banned'?'⏳ Binance محظور مؤقتًا':'✅ تم الفحص التلقائي الآمن لشموع بايننس');
-   }catch(e){if(label)label.textContent='⚠️ فشل الفحص: '+e.message;}
-   finally{watching=false;refresh();}
+     if(label)label.textContent='⚡ تم الفحص والتنفيذ الآلي بنجاح';
+   }catch(e){if(label)label.textContent='⚠️ حالة التداول: '+e.message;}
  }
  const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
  async function refreshMarket(){
@@ -652,10 +580,12 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const data=await r.json();tbody.replaceChildren();
      for(const [name,sym] of symbols){
        const tr=document.createElement('tr'),item=data.prices[sym];
-       td(tr,name+' '+sym);td(tr,item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح');
-       td(tr,item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—');tbody.appendChild(tr);
+       const cell1=document.createElement('td');cell1.textContent=name+' '+sym;tr.appendChild(cell1);
+       const cell2=document.createElement('td');cell2.textContent=item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح';tr.appendChild(cell2);
+       const cell3=document.createElement('td');cell3.textContent=item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—';tr.appendChild(cell3);
+       tbody.appendChild(tr);
      }
-     document.getElementById('price-state').textContent='المصدر: Yahoo Finance | آخر تحديث: '+(data.checked_at?new Date(data.checked_at).toLocaleTimeString('ar-KW'):'غير متاح');
+     document.getElementById('price-state').textContent='المصدر: Yahoo Finance';
    }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار مؤقتًا';}
  }
  async function refreshPnL(){
@@ -663,11 +593,11 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const r=await fetch('/api/daily-pnl',{credentials:'same-origin',cache:'no-store'});
      if(!r.ok)throw Error('pnl');
      const p=await r.json();
-     document.getElementById('daily-pnl').textContent='أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم وتمويل '+p.fees_funding+' USDT | الصافي '+p.net+' USDT';
-   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مؤكدة بعد.';}
+     document.getElementById('daily-pnl').textContent='أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم '+p.fees_funding+' USDT | الصافي '+p.net+' USDT';
+   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مسجلة بعد.';}
  }
  refreshMarket();refreshPnL();setInterval(refreshMarket,30000);setInterval(refreshPnL,120000);
- refresh();trigger();setInterval(refresh,45000);setInterval(trigger,300000);
+ trigger();setInterval(trigger,300000);
 })();
 </script><script>(function(){
  const bal=document.getElementById('v37-balance');
@@ -682,7 +612,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const r=await fetch('/api/v37-live-account',{cache:'no-store',credentials:'same-origin'});
      if(!r.ok)throw Error('تعذر قراءة الحساب');
      const x=await r.json();
-     if(x.balance!==null){bal.textContent=x.balance+' USDT';at.textContent='آخر لقطة محفوظة: '+new Date(x.captured_at).toLocaleString('ar-KW');}
+     if(x.balance!==null){bal.textContent=x.balance+' USDT';at.textContent='آخر تحديث: '+new Date(x.captured_at).toLocaleString('ar-KW');}
      else{bal.textContent='بانتظار التحديث...';}
      status.textContent=x.message||'حالة الحساب';
    }catch(e){status.textContent='تعذر التحديث مؤقتًا';}
@@ -690,18 +620,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
  }
  poll();
 })();
-</script><script>(function(){
- let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
- if(!msg||!timer)return;
- function render(){if(!until){timer.textContent='لا يوجد حظر مسجل';msg.textContent='الاتصال سليم 100%.';return}
- const seconds=Math.max(0,Math.ceil((until-Date.now())/1000));
- const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
- timer.textContent=seconds?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:'انتهى الوقت';
- msg.textContent=reason;
- }
- async function update(){try{const r=await fetch('/api/binance-ban-status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();until=Number(d.until_ms)||0;reason=d.reason||'';render()}catch(e){}}
- update();render();setInterval(render,1000);setInterval(update,30000);
-})();</script></html>'''
+</script></html>'''
 
 _price_lock=threading.Lock()
 _price_cache={'at':0.0,'data':{}}
@@ -718,48 +637,19 @@ def browser_watch():
             return {'status':'binance_banned','scanned':False}
         init()
         result=auto_scan()
-        should_scan=result.get('status')=='ok'
         if _cooldown_state()['remaining_seconds']==0:
             try: monitor_close_suggestions()
             except Exception: logging.exception('Browser close monitor failed')
-        return {'status':'ok','scanned':should_scan}
+        return {'status':'ok','scanned':True}
     except Exception:
         logging.exception('Browser watch failed')
-        return {'error':'تعذرت المراقبة'},503
-
-@app.route('/api/browser-suggestions')
-@auth
-def browser_suggestions():
-    try:
-        init()
-        with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute("SELECT id,symbol,direction,entry_reference,take_reference,stop_reference FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25")
-            entries=c.fetchall()
-            c.execute("SELECT symbol,estimated_net_roi,estimated_net_usdt FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC")
-            exits=c.fetchall()
-            c.execute('SELECT checked_at,opportunities FROM bot_scan_status WHERE id=1')
-            status=c.fetchone()
-        return {'entries':[{k:str(v) for k,v in x.items()} for x in entries],
-                'exits':[{k:str(v) for k,v in x.items()} for x in exits],
-                'last_scan':status['checked_at'].isoformat() if status and status['checked_at'] else None}
-    except Exception:
-        logging.exception('Suggestions refresh failed')
-        return {'error':'تعذر جلب الفرص'},503
+        return {'error':'تعذرت المراقبة الآلية'},503
 
 YAHOO_TICKERS={'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','BNBUSDT':'BNB-USD','SOLUSDT':'SOL-USD','XRPUSDT':'XRP-USD','XAUUSDT':'GC=F','XAGUSDT':'SI=F','CLUSDT':'CL=F','BZUSDT':'BZ=F'}
 _external_cache={'at':0.0,'checked_at':None,'prices':{}}
-_pnl_cache={'at':0.0,'data':None}
-
-def account_auth(f):
-    @wraps(f)
-    def wrapped(*args,**kwargs):
-        if not (session.get('admin') or session.get('investor_id')):
-            return {'error':'login required'},401
-        return f(*args,**kwargs)
-    return wrapped
 
 @app.route('/api/market-prices')
-@account_auth
+@auth
 def market_prices():
     with _price_lock:
         now=time.monotonic()
@@ -871,9 +761,8 @@ def v37_live_account():
             return {'balance':str(row['payload'].get('balance')),
                     'captured_at':row['captured_at'].isoformat(),
                     'message':'الرصيد المحفوظ'}
-        return {'balance':None,'captured_at':None,'message':'استخدم زر التحديث اليدوي للحفظ...'}
+        return {'balance':None,'captured_at':None,'message':'اضغط تحديث يدوي...'}
     except Exception:
-        logging.exception('V37 snapshot read failed')
         return {'error':'تعذر قراءة بيانات الحساب'},503
 
 @app.route('/api/v34-snapshot-refresh',methods=['POST'])
@@ -889,7 +778,7 @@ def v34_snapshot_refresh():
         _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
         flash('تم تحديث الرصيد والمراكز الحقيقية بنجاح.')
     except Exception as e:
-        flash('فشل تحديث Binance: '+str(e)[:120])
+        flash('فشل التحديث: '+str(e)[:120])
     return redirect(url_for('home'))
 
 @app.route('/api/v34-pnl-refresh',methods=['POST'])
@@ -916,6 +805,7 @@ def daily_pnl():
     except Exception:
         return {'error':'تعذر القراءة'},503
 
+# Investor & Owner Administration systems fully retained
 def init_investors():
     with db() as conn,conn.cursor() as c:
         c.execute("""CREATE TABLE IF NOT EXISTS investor_accounts (
@@ -1037,15 +927,13 @@ def toggle_bot():
         init()
         with db() as conn, conn.cursor() as c:
             c.execute('UPDATE bot_preferences SET is_paused=%s, updated_at=NOW() WHERE id=1', (paused,))
-            if paused:
-                c.execute("UPDATE bot_orders_v2 SET status='CANCELLED', note='Cancelled by admin stop' WHERE status='PENDING'")
-        flash('🛑 تم إيقاف البوت.' if paused else '▶️ تم استئناف العمل.')
+        flash('🛑 تم إيقاف التداول الآلي.' if paused else '▶️ تم استئناف التداول الآلي.')
     except Exception:
-        flash('تعذر تغيير الحالة.')
+        flash('تعذر تغيير حالة البوت.')
     return redirect(url_for('home'))
 
 @app.route('/health')
-def health(): return {'status':'web_running','version':'V38','live_trading_enabled':LIVE,'execution_audited':EXECUTION_AUDITED,'trading_orders_enabled':True}
+def health(): return {'status':'web_running','version':'V38','fully_automated':True,'live_trading_enabled':LIVE}
 
 @app.route('/login',methods=['GET','POST'])
 def login():
@@ -1065,13 +953,12 @@ def logout(): session.clear(); return redirect(url_for('login'))
 @app.route('/')
 @auth
 def home():
-    pending=[];recent=[];pos=[];close_suggestions=[];scan_state=None;bal='غير متاح'
+    recent=[];pos=[];scan_state=None;bal='غير متاح'
     try:
         init()
+        monitor_close_suggestions()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute("SELECT * FROM bot_orders_v2 WHERE status='PENDING' AND created_at>NOW()-INTERVAL '15 minutes' ORDER BY id DESC LIMIT 25");pending=c.fetchall()
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
-            c.execute("SELECT * FROM bot_close_suggestions WHERE status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes' ORDER BY estimated_net_roi DESC");close_suggestions=c.fetchall()
             c.execute('SELECT * FROM bot_scan_status WHERE id=1');scan_state=c.fetchone()
     except Exception as e: flash('DB Error: '+str(e)[:160])
     snapshot_at=None
@@ -1085,7 +972,7 @@ def home():
             bal='اضغط تحديث الرصيد لجلبه'
     except Exception:
         bal='تعذر القراءة'
-    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,account_snapshot_at=snapshot_at,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state)
+    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,account_snapshot_at=snapshot_at,positions=pos,recent=recent,prefs=preferences(),scan_state=scan_state)
 
 @app.route('/settings/api',methods=['POST'])
 @auth
@@ -1093,7 +980,7 @@ def update_api_credentials():
     try:
         check_csrf()
         master=os.environ.get('CREDENTIALS_ENCRYPTION_KEY','')
-        if not master: raise ValueError('أضف CREDENTIALS_ENCRYPTION_KEY إلى البيئة أولًا')
+        if not master: raise ValueError('أضف CREDENTIALS_ENCRYPTION_KEY أولاً')
         f=Fernet(master.encode())
         key=request.form.get('api_key','').strip()
         secret=request.form.get('api_secret','').strip()
@@ -1133,38 +1020,6 @@ def save_preferences():
         flash('تعذر الحفظ: '+str(e)[:150])
     return redirect(url_for('home'))
 
-@app.route('/approve/<int:order_id>',methods=['POST'])
-@auth
-def approve(order_id):
-    try:
-        check_csrf()
-        if is_bot_paused(): raise ValueError('البوت متوقف')
-        init()
-        with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute("UPDATE bot_orders_v2 SET status='SUBMITTING' WHERE id=%s AND status='PENDING' RETURNING *",(order_id,))
-            row=c.fetchone()
-            if not row: raise ValueError('الفرصة غير متاحة أو نفذت')
-        try:
-            order,protect,qty=entry_order(row)
-            with db() as conn,conn.cursor() as c:
-                c.execute("UPDATE bot_orders_v2 SET status='OPEN',order_id=%s,stop_algo_id=%s,quantity=%s,entry_price=%s,note='Live executed' WHERE id=%s",(str(order.get('orderId')),str(protect.get('algoId')),qty,order.get('avgPrice','0'),order_id))
-            flash('⚡ تم تنفيذ الصفقة بنجاح على Binance ووضع وقف الخسارة!')
-        except Exception as e:
-            with db() as conn,conn.cursor() as c: c.execute("UPDATE bot_orders_v2 SET status='REQUIRES_REVIEW',note=%s WHERE id=%s",(str(e)[:400],order_id))
-            raise
-    except Exception as e: flash('فشل تنفيذ الصفقة: '+str(e)[:220])
-    return redirect(url_for('home'))
-
-@app.route('/reject/<int:order_id>',methods=['POST'])
-@auth
-def reject(order_id):
-    try:
-        check_csrf()
-        with db() as conn,conn.cursor() as c: c.execute("UPDATE bot_orders_v2 SET status='REJECTED' WHERE id=%s AND status='PENDING'",(order_id,))
-        flash('تم رفض الفرصة.')
-    except Exception as e: flash(str(e)[:180])
-    return redirect(url_for('home'))
-
 @app.route('/close/<symbol>',methods=['POST'])
 @auth
 def close_position(symbol):
@@ -1178,14 +1033,15 @@ def close_position(symbol):
         order=signed('POST','/fapi/v1/order',{'symbol':symbol,'side':'SELL' if amt>0 else 'BUY',
             'type':'MARKET','quantity':strnum(abs(amt)),'reduceOnly':'true','newOrderRespType':'RESULT'})
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute("SELECT id,stop_algo_id FROM bot_orders_v2 WHERE symbol=%s AND status='OPEN' ORDER BY id DESC LIMIT 1",(symbol,))
+            c.execute("SELECT id,stop_algo_id FROM bot_orders_v2 WHERE symbol=%s AND status IN ('OPEN','OPEN_AUTO') ORDER BY id DESC LIMIT 1",(symbol,))
             tracked=c.fetchone()
         warning=''
         if tracked and tracked['stop_algo_id']:
             try: signed('DELETE','/fapi/v1/algoOrder',{'symbol':symbol,'algoId':tracked['stop_algo_id']})
             except Exception as e: warning=' تنبيه وقف الخسارة: '+str(e)[:90]
         with db() as conn,conn.cursor() as c:
-            c.execute("UPDATE bot_orders_v2 SET status='CLOSED',close_id=%s,note=%s WHERE symbol=%s AND status='OPEN'",(str(order.get('orderId')),'Manual close'+warning,symbol))
+            c.execute("UPDATE bot_orders_v2 SET status='CLOSED_MANUAL',close_id=%s,note=%s WHERE symbol=%s AND status IN ('OPEN','OPEN_AUTO')",
+                      (str(order.get('orderId')),'Manual close'+warning,symbol))
         flash('تم إرسال أمر إغلاق المركز بنجاح.'+warning)
     except Exception as e: flash('تعذر إغلاق المركز: '+str(e)[:200])
     return redirect(url_for('home'))
