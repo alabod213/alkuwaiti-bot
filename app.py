@@ -1,6 +1,6 @@
 """Alkuwaiti Bot V45 - Ultimate Enterprise Edition (Full Features, Language Switcher & Strict Anti-Ban)
 Fully integrated Binance Futures automated trading, WebSocket real-time streams, ban protection,
-Yahoo live prices, daily PnL, TradingView grid, tiers, referrals, and backtesting simulator.
+Yahoo live prices, daily PnL, TradingView grid, tiers, referrals, and investor profit sharing.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, re, json
 from datetime import datetime, timezone, timedelta
@@ -514,6 +514,7 @@ def monitor_close_suggestions():
         if now-_close_check_at<60: return {'status':'cached'}
         _close_check_at=now
     init()
+    init_investors_system()
     prefs=preferences()
     threshold=D(str(prefs['target_roi_pct']))/100
     try:
@@ -536,6 +537,15 @@ def monitor_close_suggestions():
                         'type':'MARKET','quantity':strnum(abs(amount)),'reduceOnly':'true','newOrderRespType':'RESULT'})
                     c.execute("UPDATE bot_orders_v2 SET status='CLOSED_AUTO',close_id=%s,note='Auto take profit executed' WHERE symbol=%s AND status IN ('OPEN','OPEN_AUTO')",
                               (str(order.get('orderId')),symbol))
+                    
+                    # تسجيل مشاركة الأرباح بنسبة 50% للمستثمرين المفعلين
+                    c.execute("SELECT id FROM investor_accounts WHERE subscription_tier='PREMIUM'")
+                    investors_list = c.fetchall()
+                    if investors_list:
+                        share_50_pct = est_usdt * D('0.5')
+                        for inv in investors_list:
+                            c.execute("INSERT INTO profit_sharing_records(investor_id, profit_usdt, share_amount_usdt, status) VALUES(%s, %s, %s, 'PENDING')",
+                                      (inv[0], est_usdt, share_50_pct))
                 except Exception:
                     pass
     return {'status':'ok'}
@@ -772,12 +782,12 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <h1>🇰🇼 البوت الكويتي V45 (Enterprise Edition)</h1><p class="warn">⚠️ التداول الحقيقي والآلي مفعل تماماً (الحد الأقصى: 100 صفقة يومياً)</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
-{% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a> | <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a></p>
+{% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a> | <a href="/owner/investors">👥 لوحة إدارة الاشتراكات والأرباح</a> | <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a></p>
 
-<article id="ban-alert-box" style="border:2px solid #ef4444;background:#2d1519;display:none;">
-  <h2 style="color:#f87171;margin-top:0">🚨 تنبيه: حساب Binance قيد القيود أو الحظر المؤقت</h2>
-  <p><strong>السبب:</strong> <span id="ban-reason-desc" style="color:#fca5a5;">—</span></p>
-  <p><strong>الوقت المتبقي:</strong> <span id="ban-countdown-timer" style="font-size:1.4em;font-weight:bold;color:#fca5a5;">0 ثانية</span></p>
+<article id="ban-alert-box" style="border:2px solid #ef4444;background:#2d1519;">
+  <h2 style="color:#f87171;margin-top:0">🛡️ حالة الاتصال وعداد حظر Binance</h2>
+  <p><strong>حالة الحظر الحالي:</strong> <span id="ban-reason-desc" style="color:#fca5a5;">لا يوجد حظر حالياً - الاتصال مستقر 🟢</span></p>
+  <p><strong>الوقت المتبقي لانتهاء الحظر:</strong> <span id="ban-countdown-timer" style="font-size:1.4em;font-weight:bold;color:#38bdf8;">0 ثانية</span></p>
 </article>
 
 <article style="border:2px solid #d97706">
@@ -863,16 +873,17 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
      const r=await fetch('/api/binance-ban-status',{credentials:'same-origin',cache:'no-store'});
      if(!r.ok)return;
      const data=await r.json();
-     const box=document.getElementById('ban-alert-box');
      const reasonText=document.getElementById('ban-reason-desc');
      const timerText=document.getElementById('ban-countdown-timer');
      if(data.remaining_seconds>0){
-       if(box)box.style.display='block';
        if(reasonText)reasonText.textContent=data.reason;
        let secs=data.remaining_seconds;
        const m=Math.floor(secs/60), s=secs%60;
        if(timerText)timerText.textContent=(m>0?m+' دقيقة و ':'')+s+' ثانية';
-     } else { if(box)box.style.display='none'; }
+     } else { 
+       if(reasonText)reasonText.textContent='لا يوجد حظر حالياً - الاتصال مستقر 🟢';
+       if(timerText)timerText.textContent='0 ثانية';
+     }
    }catch(e){}
  }
  setInterval(checkBan, 5000);
@@ -886,6 +897,8 @@ body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20p
 {% if user %}<article>
   <h2>حسابك والمستوى (Tier): <span style="color:#38bdf8">{{user.subscription_tier}}</span></h2>
   <p>البريد: {{user.email}}</p>
+  <p><strong>حالة الاشتراك:</strong> {% if user.subscription_tier == 'PREMIUM' %}<span style="color:#86efac">مفعل 🟢</span>{% else %}<span style="color:#fca5a5">غير مفعل (مجاني) 🔴</span>{% endif %}</p>
+  <p><strong>أرباحك المحققة المتاحة (مناصفة 50%):</strong> <span style="color:#38bdf8">{{ investor_payouts }} USDT</span></p>
   <p><strong>رابط الإحالة الخاص بك:</strong> <input type="text" value="https://alkuwaiti-bot.onrender.com/investors?ref={{user.referral_code}}" readonly onclick="this.select()"></p>
   <p><a href="{{url_for('investor_logout')}}">🚪 تسجيل خروج</a></p>
 </article>
@@ -897,22 +910,104 @@ body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20p
     <input type="password" name="password" placeholder="كلمة المرور" required>
     <button>دخول</button>
   </form>
+  <h3>أو إنشاء حساب مستثمر جديد</h3>
+  <form method="post" action="{{url_for('investor_register')}}">
+    <input type="hidden" name="csrf" value="{{csrf}}">
+    <input type="email" name="email" placeholder="البريد الإلكتروني الجديد" required>
+    <input type="password" name="password" placeholder="كلمة المرور الجديدة" required>
+    <button style="background:#238657">تسجيل حساب جديد</button>
+  </form>
 </article>{% endif %}
 <p><a href="{{url_for('home')}}">العودة للرئيسية</a></p></main></html>'''
+
+OWNER_INVESTORS_PAGE = '''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>لوحة إدارة المشتركين والأرباح</title><style>
+body{font-family:system-ui;background:#101827;color:#fff;margin:0;padding:20px}main{max-width:1050px;margin:auto}article{background:#1d2b40;padding:20px;border-radius:14px;margin:16px 0}table{width:100%;border-collapse:collapse;margin-top:10px}td,th{padding:10px;border:1px solid #435069;text-align:right}button{padding:6px 12px;border:0;border-radius:6px;cursor:pointer;color:white}button.activate{background:#15803d}button.deactivate{background:#b64040}a{color:#70d9ff}
+</style><main>
+<h1>👥 لوحة إدارة المشتركين ومشاركة الأرباح (50%)</h1>
+{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
+
+<article style="display:flex;gap:20px;justify-content:space-between;flex-wrap:wrap;">
+  <div><h3>المستثمرون المسجلون</h3><p style="font-size:1.5em;color:#38bdf8">{{count}}</p></div>
+  <div><h3>حصة أرباحك الصافية (50%)</h3><p style="font-size:1.5em;color:#86efac">{{total_owner_share}} USDT</p></div>
+  <div><h3>الأرباح المدفوعة للمستثمرين</h3><p style="font-size:1.5em;color:#facc15">{{paid_shares}} USDT</p></div>
+  <div><h3>الأرباح المعلقة للتسوية</h3><p style="font-size:1.5em;color:#f87171">{{pending_shares}} USDT</p></div>
+</article>
+
+<article>
+<h2>إدارة الحسابات وتفعيل الاشتراكات</h2>
+<table>
+<tr><th>البريد الإلكتروني</th><th>الباقة</th><th>كود الإحالة</th><th>تاريخ التسجيل</th><th>تفعيل / تعطيل الاشتراك</th></tr>
+{% for u in users %}
+<tr>
+  <td>{{u.email}}</td>
+  <td><b style="color:{% if u.subscription_tier == 'PREMIUM' %}#86efac{% else %}#fca5a5{% endif %}">{{u.subscription_tier}}</b></td>
+  <td>{{u.referral_code}}</td>
+  <td>{{u.created_at.strftime('%Y-%m-%d') if u.created_at else '—'}}</td>
+  <td>
+    <form method="post" action="/owner/investors/toggle-subscription" style="display:inline">
+      <input type="hidden" name="csrf" value="{{csrf}}">
+      <input type="hidden" name="user_id" value="{{u.id}}">
+      {% if u.subscription_tier == 'PREMIUM' %}
+        <input type="hidden" name="action" value="deactivate">
+        <button class="deactivate">تعطيل الاشتراك</button>
+      {% else %}
+        <input type="hidden" name="action" value="activate">
+        <button class="activate">تفعيل الاشتراك (PREMIUM)</button>
+      {% endif %}
+    </form>
+  </td>
+</tr>
+{% endfor %}
+</table>
+</article>
+
+<article>
+<h2>سجل الأرباح والموافقة على التحويلات</h2>
+<table>
+<tr><th>معرف المستثمر</th><th>إجمالي ربح الصفقة</th><th>حصة النصف (50%)</th><th>الحالة</th><th>تغيير الحالة</th></tr>
+{% for r in records %}
+<tr>
+  <td>{{r.investor_id}}</td>
+  <td>{{r.profit_usdt}} USDT</td>
+  <td>{{r.share_amount_usdt}} USDT</td>
+  <td><b style="color:{% if r.status == 'PAID' %}#86efac{% else %}#facc15{% endif %}">{{r.status}}</b></td>
+  <td>
+    {% if r.status == 'PENDING' %}
+    <form method="post" action="/owner/investors/approve-payout" style="display:inline">
+      <input type="hidden" name="csrf" value="{{csrf}}">
+      <input type="hidden" name="record_id" value="{{r.id}}">
+      <button class="activate">تأكيد دفع المبلغ للمستثمر</button>
+    </form>
+    {% else %}
+    تم الدفع والاعتماد 🟢
+    {% endif %}
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="5">لا توجد سجلات أرباح مسجلة بعد</td></tr>
+{% endfor %}
+</table>
+</article>
+
+<p><a href="/">العودة للرئيسية</a></p>
+</main></html>'''
 
 @app.route('/investors')
 def investors():
     user=None
+    investor_payouts = 0
     if session.get('investor_id'):
         try:
             init_investors_system()
             with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
                 c.execute('SELECT email,subscription_tier,referral_code FROM investor_accounts WHERE id=%s',(session['investor_id'],))
                 user=c.fetchone()
+                c.execute("SELECT COALESCE(SUM(share_amount_usdt),0) AS sum FROM profit_sharing_records WHERE investor_id=%s AND status='PAID'", (session['investor_id'],))
+                investor_payouts = c.fetchone()['sum']
             if user is None: session.pop('investor_id', None)
         except Exception:
             pass
-    return render_template_string(INVESTOR_PAGE,user=user,csrf=csrf())
+    return render_template_string(INVESTOR_PAGE,user=user,investor_payouts=investor_payouts,csrf=csrf())
 
 @app.route('/investors/register',methods=['POST'])
 def investor_register():
@@ -957,7 +1052,41 @@ def owner_investors():
     with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
         c.execute('SELECT COUNT(*) AS n FROM investor_accounts');count=c.fetchone()['n']
         c.execute('SELECT id,email,subscription_tier,referral_code,created_at FROM investor_accounts ORDER BY id DESC LIMIT 300');users=c.fetchall()
-    return render_template_string("<html><body style='background:#101827;color:#fff;font-family:system-ui;padding:20px'><h1>إدارة المشتركين</h1><p>إجمالي المشتركين: {{count}}</p><table width='100%' border='1' style='border-collapse:collapse'><tr><th>البريد</th><th>الباقة</th><th>كود الإحالة</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.email}}</td><td>{{u.subscription_tier}}</td><td>{{u.referral_code}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table><p><a href='/' style='color:#70d9ff'>الرئيسية</a></p></body></html>", count=count, users=users)
+        c.execute('SELECT * FROM profit_sharing_records ORDER BY id DESC LIMIT 300'); records=c.fetchall()
+        c.execute("SELECT COALESCE(SUM(share_amount_usdt),0) AS sum FROM profit_sharing_records"); total_owner_share=c.fetchone()['sum']
+        c.execute("SELECT COALESCE(SUM(share_amount_usdt),0) AS sum FROM profit_sharing_records WHERE status='PAID'"); paid_shares=c.fetchone()['sum']
+        c.execute("SELECT COALESCE(SUM(share_amount_usdt),0) AS sum FROM profit_sharing_records WHERE status='PENDING'"); pending_shares=c.fetchone()['sum']
+    return render_template_string(OWNER_INVESTORS_PAGE, count=count, users=users, records=records, total_owner_share=total_owner_share, paid_shares=paid_shares, pending_shares=pending_shares, csrf=csrf())
+
+@app.route('/owner/investors/toggle-subscription', methods=['POST'])
+@auth
+def toggle_subscription():
+    try:
+        check_csrf()
+        user_id = request.form.get('user_id')
+        action = request.form.get('action')
+        new_tier = 'PREMIUM' if action == 'activate' else 'FREE'
+        init_investors_system()
+        with db() as conn, conn.cursor() as c:
+            c.execute("UPDATE investor_accounts SET subscription_tier=%s WHERE id=%s", (new_tier, user_id))
+        flash('تم تغيير حالة الاشتراك بنجاح.')
+    except Exception as e:
+        flash('حدث خطأ أثناء تعديل الاشتراك: ' + str(e)[:100])
+    return redirect(url_for('owner_investors'))
+
+@app.route('/owner/investors/approve-payout', methods=['POST'])
+@auth
+def approve_payout():
+    try:
+        check_csrf()
+        record_id = request.form.get('record_id')
+        init_investors_system()
+        with db() as conn, conn.cursor() as c:
+            c.execute("UPDATE profit_sharing_records SET status='PAID' WHERE id=%s", (record_id,))
+        flash('تم تأكيد الموافقة على تحويل أرباح المستثمر.')
+    except Exception as e:
+        flash('حدث خطأ أثناء الاعتماد: ' + str(e)[:100])
+    return redirect(url_for('owner_investors'))
 
 @app.route('/backtest')
 def backtest_simulator():
