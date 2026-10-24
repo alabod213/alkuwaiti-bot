@@ -1,4 +1,4 @@
-"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition
+"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (Anti-Ban Optimized)
 Fully integrated Binance Futures automated trading, ban protection, Yahoo live prices, daily PnL,
 simultaneous TradingView 9-assets grid, tiers, referrals, and backtesting simulator.
 """
@@ -174,11 +174,12 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('⚠️ محظور مؤقتًا من Binance. نوع الحظر: '+str(state['reason'])+' | المتبقي: '+str(state['remaining_seconds'])+' ثانية.')
 
-REST_MIN_INTERVAL_SECONDS = max(1.2, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.2')))
+# رفع الحد الأدنى للفصل الزمني إلى 2.0 ثانية لمنع أي حظر نهائياً
+REST_MIN_INTERVAL_SECONDS = max(2.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '2.0')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
 _scan_local = threading.local()
 
-BINANCE_WEIGHT_BUDGET_1M = min(800, max(200, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '600'))))
+BINANCE_WEIGHT_BUDGET_1M = min(600, max(200, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '400'))))
 
 def _endpoint_weight(path, params=None):
     if path == '/fapi/v1/income': return 40
@@ -314,14 +315,29 @@ def positions():
 
 def feasibility(symbol, entry, stop, take, info=None):
     info=info or symbol_info(symbol)
-    account=signed('GET','/fapi/v2/account')
+    
+    # استخدام البيانات المخزنة مؤقتاً لتوفير الوزن ومنع الحظر تماماً
+    account = getattr(_scan_local, 'cached_account', None)
+    if not account:
+        account = signed('GET', '/fapi/v2/account')
+        
     equity=D(account['totalMarginBalance'])
     free=D(account['availableBalance'])
     if equity<=0 or free<=0: raise ValueError('لا يوجد رصيد متاح')
-    ps=positions()
+    
+    ps = getattr(_scan_local, 'cached_positions', None)
+    if ps is None:
+        ps = [p for p in signed('GET', '/fapi/v2/positionRisk') if D(p['positionAmt'])!=0]
+        
     if any(x['symbol']==symbol for x in ps): raise ValueError('مركز مفتوح على نفس الرمز')
+    
     exposure=sum(abs(D(x['positionAmt']))*D(x['markPrice']) for x in ps)
-    for order in signed('GET','/fapi/v1/openOrders'):
+    
+    open_ords = getattr(_scan_local, 'cached_open_orders', None)
+    if open_ords is None:
+        open_ords = signed('GET', '/fapi/v1/openOrders')
+        
+    for order in open_ords:
         if order.get('reduceOnly') or order.get('closePosition'): continue
         if order.get('type') in ('STOP_MARKET','TAKE_PROFIT_MARKET'): continue
         remaining=max(D('0'),D(order.get('origQty','0'))-D(order.get('executedQty','0')))
@@ -330,6 +346,7 @@ def feasibility(symbol, entry, stop, take, info=None):
             try: px=D(public('/fapi/v1/premiumIndex',{'symbol':order['symbol']})['markPrice'])
             except Exception: raise ValueError('تعذر احتساب الأوامر المعلقة')
         exposure+=remaining*px
+        
     prefs=preferences()
     room=equity*D(str(prefs['max_exposure_pct']))/D('100')-exposure
     filters={f['filterType']:f for f in info['filters']}
@@ -404,7 +421,7 @@ def auto_scan():
         c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
         c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
                      AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
-                  (45,))
+                  (60,))
         if not c.fetchone(): return {'status':'rate_limited','created':0}
 
     _scan_local.signed_cache={}
@@ -422,6 +439,15 @@ def _auto_scan_body():
         if not locked:
             return {'status':'busy','created':0}
         try:
+            # سحب بيانات الحساب والمراكز والأوامر مرة واحدة فقط في بداية الدورة لتوفير الوزن بالكامل
+            _scan_local.signed_cache = {}
+            try:
+                _scan_local.cached_account = signed('GET', '/fapi/v2/account')
+                _scan_local.cached_positions = [p for p in signed('GET', '/fapi/v2/positionRisk') if D(p['positionAmt']) != 0]
+                _scan_local.cached_open_orders = signed('GET', '/fapi/v1/openOrders')
+            except Exception as e:
+                return {'status':'error', 'message': str(e)[:100]}
+
             for sym in SYMBOLS:
                 if get_today_trades_count() >= MAX_DAILY_TRADES:
                     break
@@ -433,13 +459,13 @@ def _auto_scan_body():
                         rejected[sym]='لا توجد إشارة'
                         c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,note)
                                      VALUES(%s,'LONG',0,0,0,'EXPIRED','لا توجد إشارة فنية مطابقة')""", (sym,))
-                        time.sleep(1.0)
+                        time.sleep(1.5)
                         continue
                     direction,entry,stop,take=signal
-                    c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('OPEN','OPEN_AUTO') LIMIT 1",(sym,))
-                    if c.fetchone():
+                    
+                    if any(x['symbol'] == sym for x in _scan_local.cached_positions):
                         rejected[sym]='مركز سابق مفتوح'
-                        time.sleep(1.0)
+                        time.sleep(1.5)
                         continue
                     
                     order, protect, qty = direct_execute_trade(sym, direction, entry, stop, take, info)
@@ -451,11 +477,15 @@ def _auto_scan_body():
                     rejected[sym]=str(e)[:110]
                     c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,note)
                                  VALUES(%s,'LONG',0,0,0,'EXPIRED',%s)""", (sym, str(e)[:100]))
-                time.sleep(1.0)
+                time.sleep(1.5) # فاصل زمني آمن بين كل عملة وأخرى
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(executed,str(rejected)[:1800]))
             return {'status':'ok','executed':executed,'excluded':len(rejected)}
         finally:
             c.execute("SELECT pg_advisory_unlock(68210314)")
+            _scan_local.signed_cache = None
+            _scan_local.cached_account = None
+            _scan_local.cached_positions = None
+            _scan_local.cached_open_orders = None
 
 _close_check_lock=threading.Lock()
 _close_check_at=0.0
@@ -717,7 +747,7 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <p style="font-size:1.4em;font-weight:bold">الصفقات اليوم: <span style="color:#38bdf8">{{today_trades}}</span> / 100 صفقة</p>
 </article>
 
-<article><h2>📈 الشارتات التفاعلية المباشرة (جميع العملات والسلع الـ 9)</h2>
+<article><h2>📈 الشارتات التفاعلية المباشرة (العملات الرئيسية)</h2>
 <div class="charts-grid">
   <div class="chart-box"><div class="chart-title">BTCUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
   <div class="chart-box"><div class="chart-title">ETHUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3AETHUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
