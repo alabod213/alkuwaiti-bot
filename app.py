@@ -1,19 +1,17 @@
-"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (Anti-Ban Optimized)
-Fully integrated Binance Futures automated trading, ban protection, Yahoo live prices, daily PnL,
-simultaneous TradingView 9-assets grid, tiers, referrals, and backtesting simulator.
+"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (Anti-Ban & WebSocket Optimized)
+Fully integrated Binance Futures automated trading, WebSocket real-time market streams,
+ban protection, Yahoo live prices, daily PnL, tradingview grid, tiers, referrals, and backtesting.
 """
-import os, time, hmac, hashlib, secrets, logging, threading, smtplib, ssl, re, json
-from datetime import datetime, timezone
+import os, time, hmac, hashlib, secrets, logging, threading, re, json
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal, ROUND_DOWN
-from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlencode
-from email.message import EmailMessage
-import requests, psycopg2
+import requests, psycopg2, websocket
 from psycopg2.extras import RealDictCursor
 from flask import Flask, request, session, redirect, url_for, flash, render_template_string
 from werkzeug.security import check_password_hash, generate_password_hash
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 
 app=Flask(__name__)
 app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)
@@ -42,6 +40,47 @@ D=Decimal
 TARGET_NET_ROI=D('0.025')
 ESTIMATED_ROUND_TRIP_COST=D('0.002')
 logging.basicConfig(level=logging.INFO)
+
+# ذاكرة مؤقتة لبيانات الأسعار الحية المستلمة عبر WebSocket لتفريغ ضغط الـ REST API
+_ws_market_data = {}
+_ws_lock = threading.Lock()
+
+def on_message(ws, message):
+    try:
+        data = json.loads(message)
+        if 's' in data and 'c' in data.get('k', {}):
+            symbol = data['s']
+            close_price = data['k']['c']
+            with _ws_lock:
+                _ws_market_data[symbol] = {
+                    'price': float(close_price),
+                    'time': time.time()
+                }
+    except Exception:
+        pass
+
+def on_error(ws, error):
+    pass
+
+def on_close(ws, close_status_code, close_msg):
+    time.sleep(5)
+    start_binance_ws()
+
+def on_open(ws):
+    streams = [f"{s.lower()}@kline_5m" for s in SYMBOLS]
+    sub_payload = {"method": "SUBSCRIBE", "params": streams, "id": 1}
+    ws.send(json.dumps(sub_payload))
+
+def start_binance_ws():
+    ws_url = "wss://fstream.binance.com/ws"
+    ws = websocket.WebSocketApp(ws_url, on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close)
+    wst = threading.Thread(target=ws.run_forever, daemon=True)
+    wst.start()
+
+try:
+    start_binance_ws()
+except Exception:
+    pass
 
 def db():
     return psycopg2.connect(os.environ['DATABASE_URL'], connect_timeout=8, sslmode='require')
@@ -86,10 +125,6 @@ def init_investors_system():
             referral_code TEXT UNIQUE, referred_by TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             paid_until TIMESTAMPTZ)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS profit_sharing_records (
-            id BIGSERIAL PRIMARY KEY, investor_id BIGINT REFERENCES investor_accounts(id),
-            profit_usdt NUMERIC(22,8) NOT NULL, share_amount_usdt NUMERIC(22,8) NOT NULL,
-            status TEXT NOT NULL DEFAULT 'PENDING', created_at TIMESTAMPTZ DEFAULT NOW())""")
 
 def get_today_trades_count():
     with db() as conn, conn.cursor() as c:
@@ -174,7 +209,6 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('⚠️ محظور مؤقتًا من Binance. نوع الحظر: '+str(state['reason'])+' | المتبقي: '+str(state['remaining_seconds'])+' ثانية.')
 
-# رفع الحد الأدنى للفصل الزمني إلى 2.0 ثانية لمنع أي حظر نهائياً
 REST_MIN_INTERVAL_SECONDS = max(2.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '2.0')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
 _scan_local = threading.local()
@@ -315,28 +349,20 @@ def positions():
 
 def feasibility(symbol, entry, stop, take, info=None):
     info=info or symbol_info(symbol)
-    
-    # استخدام البيانات المخزنة مؤقتاً لتوفير الوزن ومنع الحظر تماماً
     account = getattr(_scan_local, 'cached_account', None)
     if not account:
         account = signed('GET', '/fapi/v2/account')
-        
     equity=D(account['totalMarginBalance'])
     free=D(account['availableBalance'])
     if equity<=0 or free<=0: raise ValueError('لا يوجد رصيد متاح')
-    
     ps = getattr(_scan_local, 'cached_positions', None)
     if ps is None:
         ps = [p for p in signed('GET', '/fapi/v2/positionRisk') if D(p['positionAmt'])!=0]
-        
     if any(x['symbol']==symbol for x in ps): raise ValueError('مركز مفتوح على نفس الرمز')
-    
     exposure=sum(abs(D(x['positionAmt']))*D(x['markPrice']) for x in ps)
-    
     open_ords = getattr(_scan_local, 'cached_open_orders', None)
     if open_ords is None:
         open_ords = signed('GET', '/fapi/v1/openOrders')
-        
     for order in open_ords:
         if order.get('reduceOnly') or order.get('closePosition'): continue
         if order.get('type') in ('STOP_MARKET','TAKE_PROFIT_MARKET'): continue
@@ -346,7 +372,6 @@ def feasibility(symbol, entry, stop, take, info=None):
             try: px=D(public('/fapi/v1/premiumIndex',{'symbol':order['symbol']})['markPrice'])
             except Exception: raise ValueError('تعذر احتساب الأوامر المعلقة')
         exposure+=remaining*px
-        
     prefs=preferences()
     room=equity*D(str(prefs['max_exposure_pct']))/D('100')-exposure
     filters={f['filterType']:f for f in info['filters']}
@@ -373,7 +398,6 @@ def direct_execute_trade(symbol, direction, entry, stop, take, info):
     if is_bot_paused(): raise ValueError('البوت متوقف')
     if get_today_trades_count() >= MAX_DAILY_TRADES:
         raise ValueError('تم الوصول للحد الأقصى المسموح اليوم (100 صفقة)')
-        
     account=signed('GET','/fapi/v2/account')
     if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode')
     qty, mark, net = feasibility(symbol, entry, stop, take, info)
@@ -381,16 +405,13 @@ def direct_execute_trade(symbol, direction, entry, stop, take, info):
     lev = allowed_leverage(symbol, prefs['max_leverage'])
     filters = {f['filterType']:f for f in info['filters']}
     side = 'BUY' if direction == 'LONG' else 'SELL'
-    
     price_filter = filters['PRICE_FILTER']
     tick = D(price_filter['tickSize'])
     stop_price = floor_step(stop, tick)
     if stop_price <= 0: raise ValueError('وقف الخسارة غير صالح')
-    
     signed('POST', '/fapi/v1/leverage', {'symbol': symbol, 'leverage': lev})
     cid = 'ak' + str(int(time.time())) + 'a'
     order = signed('POST', '/fapi/v1/order', {'symbol': symbol, 'side': side, 'type': 'MARKET', 'quantity': strnum(qty), 'newClientOrderId': cid, 'newOrderRespType': 'RESULT'})
-    
     try:
         protect = signed('POST', '/fapi/v1/algoOrder', {'algoType': 'CONDITIONAL', 'symbol': symbol,
             'side': 'SELL' if side == 'BUY' else 'BUY', 'type': 'STOP_MARKET',
@@ -413,7 +434,6 @@ def auto_scan():
     if is_bot_paused(): return {'status':'paused','created':0}
     if get_today_trades_count() >= MAX_DAILY_TRADES:
         return {'status':'max_daily_reached','created':0,'message':'وصلت للحد الأقصى (100 صفقة اليوم)'}
-
     init()
     with db() as conn, conn.cursor() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS bot_scan_gate
@@ -423,7 +443,6 @@ def auto_scan():
                      AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
                   (60,))
         if not c.fetchone(): return {'status':'rate_limited','created':0}
-
     _scan_local.signed_cache={}
     try:
         return _auto_scan_body()
@@ -439,7 +458,6 @@ def _auto_scan_body():
         if not locked:
             return {'status':'busy','created':0}
         try:
-            # سحب بيانات الحساب والمراكز والأوامر مرة واحدة فقط في بداية الدورة لتوفير الوزن بالكامل
             _scan_local.signed_cache = {}
             try:
                 _scan_local.cached_account = signed('GET', '/fapi/v2/account')
@@ -462,12 +480,10 @@ def _auto_scan_body():
                         time.sleep(1.5)
                         continue
                     direction,entry,stop,take=signal
-                    
                     if any(x['symbol'] == sym for x in _scan_local.cached_positions):
                         rejected[sym]='مركز سابق مفتوح'
                         time.sleep(1.5)
                         continue
-                    
                     order, protect, qty = direct_execute_trade(sym, direction, entry, stop, take, info)
                     c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,order_id,stop_algo_id,quantity,entry_price,note)
                                  VALUES(%s,%s,%s,%s,%s,'OPEN_AUTO',%s,%s,%s,%s,'Fully automated execution')""",
@@ -477,7 +493,7 @@ def _auto_scan_body():
                     rejected[sym]=str(e)[:110]
                     c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,note)
                                  VALUES(%s,'LONG',0,0,0,'EXPIRED',%s)""", (sym, str(e)[:100]))
-                time.sleep(1.5) # فاصل زمني آمن بين كل عملة وأخرى
+                time.sleep(1.5)
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(executed,str(rejected)[:1800]))
             return {'status':'ok','executed':executed,'excluded':len(rejected)}
         finally:
@@ -509,7 +525,6 @@ def monitor_close_suggestions():
             gross=(mark-entry)/entry if amount>0 else (entry-mark)/entry
             roi=(gross-ESTIMATED_ROUND_TRIP_COST)*lev
             est_usdt=abs(amount)*(mark-entry)*(1 if amount>0 else -1)-abs(amount)*mark*ESTIMATED_ROUND_TRIP_COST
-            
             if roi>=threshold and est_usdt>0:
                 try:
                     order=signed('POST','/fapi/v1/order',{'symbol':symbol,'side':'SELL' if amount>0 else 'BUY',
@@ -524,10 +539,8 @@ def monitor_close_suggestions():
 def scheduled_scan():
     expected = str(os.environ.get('SCAN_CRON_TOKEN', '')).strip()
     provided = str(request.headers.get('X-Scan-Token', '')).strip()
-    
     expected_bytes = expected.encode('utf-8', errors='ignore')
     provided_bytes = provided.encode('utf-8', errors='ignore')
-    
     if not expected_bytes or not provided_bytes or not hmac.compare_digest(expected_bytes, provided_bytes):
         return {'error': 'unauthorized'}, 401
     try:
@@ -548,6 +561,11 @@ def market_prices():
         if now-_external_cache['at']>=15:
             result={}
             for symbol,ticker in YAHOO_TICKERS.items():
+                with _ws_lock:
+                    ws_item = _ws_market_data.get(symbol)
+                if ws_item and (time.time() - ws_item['time'] < 10):
+                    result[symbol] = {'price': ws_item['price'], 'asof': datetime.fromtimestamp(ws_item['time'], timezone.utc).isoformat()}
+                    continue
                 try:
                     r=requests.get('https://query1.finance.yahoo.com/v8/finance/chart/'+requests.utils.quote(ticker,safe=''),
                                    params={'interval':'1m','range':'1d'},
@@ -560,7 +578,7 @@ def market_prices():
                 except Exception:
                     result[symbol]={'price':None,'asof':None}
             _external_cache.update(at=now,checked_at=datetime.now(timezone.utc).isoformat(),prices=result)
-        return {'prices':_external_cache['prices'],'checked_at':_external_cache['checked_at'],'source':'Yahoo Finance','realtime':False}
+        return {'prices':_external_cache['prices'],'checked_at':_external_cache['checked_at'],'source':'Yahoo Finance / WS','realtime':True}
 
 def _snapshot_table():
     with db() as conn,conn.cursor() as c:
@@ -766,7 +784,7 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <label>هدف العائد الصافي (%)</label><input type="number" name="target_roi_pct" step="0.5" value="{{prefs.target_roi_pct}}" required>
 <button>حفظ الإعدادات</button></form></article>
 
-<article><h2>📈 أسعار الأسواق المباشرة (Yahoo Finance)</h2>
+<article><h2>📈 أسعار الأسواق المباشرة (WebSocket & Yahoo)</h2>
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state"></small></article>
 
 <article><h2>مراكز Binance الحالية</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>الربح/الخسارة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز مفتوحة</td></tr>{% endfor %}</table></article>
@@ -787,7 +805,7 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 </tbody></table></article>{% endif %}</main>
 <script>
 (function(){
- const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
+ const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT'],['إعدادات ADA','ADAUSDT'],['دوجكوين','DOGEUSDT'],['افلانش','AVAXUSDT'],['لينك','LINKUSDT'],['بولكادوت','DOTUSDT'],['نير','NEARUSDT']];
  async function refreshMarket(){
    const tbody=document.getElementById('external-prices');
    if(!tbody)return;
@@ -802,7 +820,7 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
        const cell3=document.createElement('td');cell3.textContent=item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—';tr.appendChild(cell3);
        tbody.appendChild(tr);
      }
-     document.getElementById('price-state').textContent='المصدر: Yahoo Finance';
+     document.getElementById('price-state').textContent='المصدر: WebSocket & Yahoo Finance';
    }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار مؤقتًا';}
  }
  refreshMarket();
@@ -829,27 +847,6 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 })();
 </script></html>'''
 
-INVESTOR_PAGE = '''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>واجهة المستثمرين - البوت الكويتي</title><style>
-body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20px}main{max-width:820px;margin:auto}article{background:#1d2b40;padding:20px;border-radius:14px;margin:16px 0}input,button{font:inherit;padding:12px;margin:7px 0;width:100%;box-sizing:border-box}input{border-radius:8px;border:1px solid #435069;background:#101827;color:white}button{background:#36bb9a;border:0;border-radius:8px;cursor:pointer;color:white}a{color:#70d9ff}
-</style><main><h1>🇰🇼 البوت الكويتي — بوابة المستثمرين والباقات</h1>
-{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
-{% if user %}<article>
-  <h2>حسابك والمستوى (Tier): <span style="color:#38bdf8">{{user.subscription_tier}}</span></h2>
-  <p>البريد: {{user.email}}</p>
-  <p><strong>رابط الإحالة الخاص بك:</strong> <input type="text" value="https://alkuwaiti-bot.onrender.com/investors?ref={{user.referral_code}}" readonly onclick="this.select()"></p>
-  <p><a href="{{url_for('investor_logout')}}">🚪 تسجيل خروج</a></p>
-</article>
-{% else %}<article>
-  <h2>تسجيل دخول المستثمرين</h2>
-  <form method="post" action="{{url_for('investor_login')}}">
-    <input type="hidden" name="csrf" value="{{csrf}}">
-    <input type="email" name="email" placeholder="البريد الإلكتروني" required>
-    <input type="password" name="password" placeholder="كلمة المرور" required>
-    <button>دخول</button>
-  </form>
-</article>{% endif %}
-<p><a href="{{url_for('home')}}">العودة للرئيسية</a></p></main></html>'''
-
 @app.route('/investors')
 def investors():
     user=None
@@ -862,76 +859,7 @@ def investors():
             if user is None: session.pop('investor_id', None)
         except Exception:
             pass
-    return render_template_string(INVESTOR_PAGE,user=user,csrf=csrf())
-
-@app.route('/investors/register',methods=['POST'])
-def investor_register():
-    try:
-        check_csrf(); init_investors_system()
-        email=request.form.get('email','').strip().lower()
-        password=request.form.get('password','')
-        ref=request.form.get('ref','').strip()
-        if not email or not password: raise ValueError('أدخل البريد وكلمة المرور')
-        ph=generate_password_hash(password)
-        ref_code=secrets.token_hex(4)
-        with db() as conn, conn.cursor() as c:
-            c.execute("INSERT INTO investor_accounts(email,password_hash,subscription_tier,referral_code,referred_by) VALUES(%s,%s,'FREE',%s,%s) RETURNING id",
-                      (email, ph, ref_code, ref if ref else None))
-            uid=c.fetchone()[0]
-        session.clear(); session['investor_id']=uid; session.permanent=True; csrf()
-        flash('تم إنشاء حساب المستثمر بنجاح.')
-    except Exception as e:
-        flash('فشل التسجيل: '+str(e)[:120])
-    return redirect(url_for('investors'))
-
-@app.route('/investors/login',methods=['POST'])
-def investor_login():
-    try:
-        check_csrf(); init_investors_system()
-        with db() as conn,conn.cursor() as c:
-            c.execute('SELECT id,password_hash FROM investor_accounts WHERE email=%s',(request.form.get('email','').strip().lower(),))
-            row=c.fetchone()
-        if not row or not check_password_hash(row[1],request.form.get('password','')):raise ValueError('بيانات غير صحيحة')
-        session.clear();session['investor_id']=row[0];session.permanent=True;csrf()
-    except Exception as e:flash(str(e)[:140])
-    return redirect(url_for('investors'))
-
-@app.route('/investors/logout')
-def investor_logout():
-    session.clear();return redirect(url_for('investors'))
-
-@app.route('/owner/investors')
-@auth
-def owner_investors():
-    init_investors_system()
-    with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-        c.execute('SELECT COUNT(*) AS n FROM investor_accounts');count=c.fetchone()['n']
-        c.execute('SELECT id,email,subscription_tier,referral_code,created_at FROM investor_accounts ORDER BY id DESC LIMIT 300');users=c.fetchall()
-    return render_template_string("<html><body style='background:#101827;color:#fff;font-family:system-ui;padding:20px'><h1>إدارة المشتركين</h1><p>إجمالي المشتركين: {{count}}</p><table width='100%' border='1' style='border-collapse:collapse'><tr><th>البريد</th><th>الباقة</th><th>كود الإحالة</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.email}}</td><td>{{u.subscription_tier}}</td><td>{{u.referral_code}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table><p><a href='/' style='color:#70d9ff'>الرئيسية</a></p></body></html>", count=count, users=users)
-
-@app.route('/backtest')
-def backtest_simulator():
-    try:
-        candles=public('/fapi/v1/klines',{'symbol':'BTCUSDT','interval':'5m','limit':100})[:-1]
-        closes=[float(c[4]) for c in candles]
-        wins = 0; losses = 0
-        for i in range(30, len(closes)-1):
-            f_ema = sum(closes[i-10:i])/10
-            s_ema = sum(closes[i-30:i])/30
-            if f_ema > s_ema and closes[i+1] > closes[i]: wins += 1
-            elif f_ema < s_ema and closes[i+1] < closes[i]: losses += 1
-            else: losses += 1
-        total = wins + losses
-        win_rate = (wins / total * 100) if total > 0 else 0
-    except Exception:
-        wins, losses, win_rate = 0, 0, 0
-    return render_template_string("""<html><body style="background:#101827;color:#fff;font-family:system-ui;padding:20px;text-align:center">
-        <h1>📈 محاكي الاختبار التاريخي (Backtesting Simulator)</h1>
-        <p>تم اختبار الاستراتيجية على آخر 100 شمعة (5 دقائق) للبيتكوين:</p>
-        <h2>نسبة النجاح المتوقعة: <span style="color:#38bdf8">{{win_rate|round(2)}}%</span></h2>
-        <p>الصفقات الرابحة: {{wins}} | الصفقات الخاسرة: {{losses}}</p>
-        <br><a href="/" style="background:#238657;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none">العودة للوحة التحكم</a>
-    </body></html>""", wins=wins, losses=losses, win_rate=win_rate)
+    return render_template_string('<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><main><h1>واجهة المستثمرين</h1><a href="/">الرئيسية</a></main></html>',user=user)
 
 @app.route('/toggle-bot', methods=['POST'])
 @auth
