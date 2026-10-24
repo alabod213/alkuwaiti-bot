@@ -1,9 +1,9 @@
 """
-Alkuwaiti Bot V55 - Ultimate Enterprise Edition (Unabridged)
+Alkuwaiti Bot V56 - Ultimate Enterprise Edition (Unabridged)
 Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
-Rate-Limit Protection & Auto-Cooldown, Yahoo & WS Live Price Feeds,
-TradingView Charts, Backtest Simulator, Bank Accounts Management,
-Subscription Approvals & Cancellations, Mandatory Terms Agreement.
+Rate-Limit Protection & Auto-Cooldown, Cron-Job Scan Endpoint,
+Yahoo & WS Live Price Feeds, TradingView Charts, Backtest Simulator,
+Bank Accounts Management, Subscription Approvals & Terms Gate.
 """
 
 import os
@@ -41,7 +41,7 @@ BASE = os.environ.get('BINANCE_BASE_URL', 'https://fapi.binance.com').rstrip('/'
 MAX_DAILY_TRADES = 100 
 LIVE = True
 D = Decimal
-TARGET_NET_ROI = D('0.008')  # تم تخفيضها إلى 0.8% لتمرير الصفقات وتجنب انتهاء الصلاحية
+TARGET_NET_ROI = D('0.008')
 ESTIMATED_ROUND_TRIP_COST = D('0.002')
 
 logging.basicConfig(level=logging.INFO)
@@ -264,7 +264,7 @@ def _assert_binance_available():
     if state['remaining_seconds'] > 0:
         raise ValueError(f"⚠️ محظور مؤقتاً من Binance. السبب: {state['reason']} | المتبقي: {state['remaining_seconds']} ثانية")
 
-REST_MIN_INTERVAL_SECONDS = 4.0  # زيادة الفاصل الزمني لمنع الحظر
+REST_MIN_INTERVAL_SECONDS = 4.0
 
 def signed(method, path, params=None):
     _assert_binance_available()
@@ -311,6 +311,36 @@ def check_csrf():
 @app.route('/api/binance-ban-status')
 def binance_ban_status():
     return _cooldown_state(force=True)
+
+# ---------------------------------------------------------
+# NEW: Cron-Job API Endpoint (Fixes 405 Method Not Allowed)
+# ---------------------------------------------------------
+@app.route('/cron/scan', methods=['GET', 'POST'])
+@app.route('/api/scan', methods=['GET', 'POST'])
+def cron_scan_market():
+    """مسار مخصص لاستقبال طلبات Cron-job سواء كانت GET أو POST"""
+    try:
+        init()
+        if is_bot_paused():
+            return {'status': 'PAUSED', 'message': 'البوت متوقف حالياً'}, 200
+        
+        # إجراء فحص الأسواق
+        opps = 0
+        for sym in SYMBOLS[:3]: # فحص العينات الأساسية
+            prop = proposal(sym)
+            if prop: opps += 1
+
+        with db() as conn, conn.cursor() as c:
+            c.execute("UPDATE bot_scan_status SET checked_at=NOW(), opportunities=%s, reason=%s WHERE id=1",
+                      (opps, 'تم الفحص تلقائياً عبر Cron-Job'))
+
+        return {
+            'status': 'SUCCESS',
+            'opportunities_found': opps,
+            'timestamp': datetime.now(timezone.utc).isoformat()
+        }, 200
+    except Exception as e:
+        return {'status': 'ERROR', 'error': str(e)}, 500
 
 # ---------------------------------------------------------
 # Technical Analysis Algorithms (EMA & ATR Calculation)
@@ -447,7 +477,7 @@ PAGE = '''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>البوت الكويتي - V55 Enterprise Edition</title>
+<title>البوت الكويتي - V56 Enterprise Edition</title>
 <style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}
 main{max-width:1150px;margin:auto;padding:16px}
@@ -489,7 +519,7 @@ window.onload = function(){
 <body>
 <main>
 <div class="top-bar">
-  <div><strong>🇰🇼 البوت الكويتي V55 Enterprise</strong></div>
+  <div><strong>🇰🇼 البوت الكويتي V56 Enterprise</strong></div>
   <div id="live-clock" class="clock-box">جاري تحميل الوقت...</div>
   <div>
     <select id="lang-selector" onchange="changeLanguage(this)" style="background:#202d40;color:white;border:1px solid #435069">
