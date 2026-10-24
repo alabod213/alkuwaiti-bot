@@ -1,4 +1,4 @@
-"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (All 9 Charts Displayed Simultaneously).
+"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition
 Fully integrated Binance Futures automated trading, ban protection, Yahoo live prices, daily PnL,
 simultaneous TradingView 9-assets grid, tiers, referrals, and backtesting simulator.
 """
@@ -20,7 +20,7 @@ app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax', PERMANENT_SESSION_LIFETIME=3600)
 BASE=os.environ.get('BINANCE_BASE_URL','https://fapi.binance.com').rstrip('/')
 
-MAX_DAILY_TRADES = 100  # الحد الأقصى اليومي لصفقات بايننس
+MAX_DAILY_TRADES = 100 
 
 def credentials():
     master=os.environ.get('CREDENTIALS_ENCRYPTION_KEY','')
@@ -33,13 +33,13 @@ def credentials():
             return f.decrypt(bytes(row[0])).decode(),f.decrypt(bytes(row[1])).decode()
     return os.environ.get('BINANCE_API_KEY',''),os.environ.get('BINANCE_API_SECRET','')
 
-SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
+SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT','ADAUSDT','DOGEUSDT','AVAXUSDT','LINKUSDT','DOTUSDT','NEARUSDT')
 
 LIVE=True
 EXECUTION_AUDITED=True
 
 D=Decimal
-TARGET_NET_ROI=D('0.10')
+TARGET_NET_ROI=D('0.025')
 ESTIMATED_ROUND_TRIP_COST=D('0.002')
 logging.basicConfig(level=logging.INFO)
 
@@ -50,9 +50,9 @@ def init():
     with db() as conn, conn.cursor() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS bot_preferences (
             id INTEGER PRIMARY KEY CHECK (id=1),
-            max_exposure_pct NUMERIC NOT NULL DEFAULT 10,
-            max_leverage INTEGER NOT NULL DEFAULT 10,
-            target_roi_pct NUMERIC NOT NULL DEFAULT 10,
+            max_exposure_pct NUMERIC NOT NULL DEFAULT 20,
+            max_leverage INTEGER NOT NULL DEFAULT 15,
+            target_roi_pct NUMERIC NOT NULL DEFAULT 2.5,
             updated_at TIMESTAMPTZ DEFAULT NOW())''')
         c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
         c.execute('''ALTER TABLE bot_preferences ADD COLUMN IF NOT EXISTS is_paused BOOLEAN NOT NULL DEFAULT FALSE''')
@@ -93,7 +93,7 @@ def init_investors_system():
 
 def get_today_trades_count():
     with db() as conn, conn.cursor() as c:
-        c.execute("SELECT COUNT(*) FROM bot_orders_v2 WHERE created_at >= CURRENT_DATE")
+        c.execute("SELECT COUNT(*) FROM bot_orders_v2 WHERE created_at >= CURRENT_DATE AND status LIKE 'OPEN%'")
         row = c.fetchone()
         return row[0] if row else 0
 
@@ -174,13 +174,10 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('⚠️ محظور مؤقتًا من Binance. نوع الحظر: '+str(state['reason'])+' | المتبقي: '+str(state['remaining_seconds'])+' ثانية.')
 
-# رفع الحد الأدنى للفصل الزمني بين الطلبات لحماية الحساب من الحظر (تم زيادته إلى 1.2 ثانية لتجنب الـ 418 تماماً)
 REST_MIN_INTERVAL_SECONDS = max(1.2, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.2')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
-BINANCE_SCAN_INTERVAL_SECONDS = max(60, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','60')))
 _scan_local = threading.local()
 
-# تخفيض ميزانية الوزن لضمان عدم تجاوز الحد المسموح في دقيقة واحدة
 BINANCE_WEIGHT_BUDGET_1M = min(800, max(200, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '600'))))
 
 def _endpoint_weight(path, params=None):
@@ -407,7 +404,7 @@ def auto_scan():
         c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
         c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
                      AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
-                  (60,)) # زيادة الفاصل الزمني بين الفحوصات الآلية لحماية الحساب تماماً
+                  (45,))
         if not c.fetchone(): return {'status':'rate_limited','created':0}
 
     _scan_local.signed_cache={}
@@ -434,10 +431,12 @@ def _auto_scan_body():
                     signal=proposal(sym)
                     if not signal:
                         rejected[sym]='لا توجد إشارة'
-                        time.sleep(1.0) # زيادة فترة التوقف المؤقت بين فحص العملات لمنع أي ضغط على الـ API
+                        c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,note)
+                                     VALUES(%s,'LONG',0,0,0,'EXPIRED','لا توجد إشارة فنية مطابقة')""", (sym,))
+                        time.sleep(1.0)
                         continue
                     direction,entry,stop,take=signal
-                    c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','OPEN_AUTO','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
+                    c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('OPEN','OPEN_AUTO') LIMIT 1",(sym,))
                     if c.fetchone():
                         rejected[sym]='مركز سابق مفتوح'
                         time.sleep(1.0)
@@ -450,6 +449,8 @@ def _auto_scan_body():
                     executed+=1
                 except Exception as e:
                     rejected[sym]=str(e)[:110]
+                    c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,note)
+                                 VALUES(%s,'LONG',0,0,0,'EXPIRED',%s)""", (sym, str(e)[:100]))
                 time.sleep(1.0)
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(executed,str(rejected)[:1800]))
             return {'status':'ok','executed':executed,'excluded':len(rejected)}
@@ -514,7 +515,7 @@ _price_lock=threading.Lock()
 def market_prices():
     with _price_lock:
         now=time.monotonic()
-        if now-_external_cache['at']>=30:
+        if now-_external_cache['at']>=15:
             result={}
             for symbol,ticker in YAHOO_TICKERS.items():
                 try:
@@ -590,7 +591,7 @@ def _v37_auto_refresh():
     global _v37_last_check
     with _v37_refresh_lock:
         now=time.monotonic()
-        if now-_v37_last_check<180:return # زيادة الفاصل الزمني للتحديث التلقائي للحساب
+        if now-_v37_last_check<180:return 
         _v37_last_check=now
     try:
         _assert_binance_available()
@@ -693,7 +694,6 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a> | <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a></p>
 
-<!-- 🚨 عداد حظر بايننس -->
 <article id="ban-alert-box" style="border:2px solid #ef4444;background:#2d1519;display:none;">
   <h2 style="color:#f87171;margin-top:0">🚨 تنبيه: حساب Binance قيد القيود أو الحظر المؤقت</h2>
   <p><strong>السبب:</strong> <span id="ban-reason-desc" style="color:#fca5a5;">—</span></p>
@@ -717,23 +717,11 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <p style="font-size:1.4em;font-weight:bold">الصفقات اليوم: <span style="color:#38bdf8">{{today_trades}}</span> / 100 صفقة</p>
 </article>
 
-<article><h2>🛡️ إدارة البوت الشاملة</h2>
-<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
-<a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المشتركين والباقات</a>
-<a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الموافقات والطلبات</a>
-</div></article>
-
 <article><h2>📈 الشارتات التفاعلية المباشرة (جميع العملات والسلع الـ 9)</h2>
 <div class="charts-grid">
-  <div class="chart-box"><div class="chart-title">BTCUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22trendLineColor%22%3A%22%232962FF%22%2C%22underLineColor%22%3A%22rgba(41%2C%2098%2C%20255%2C%200.3)%22%2C%22underLineBottomColor%22%3A%22rgba(41%2C%2098%2C%20255%2C%200)%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%2C%22largeChartUrl%22%3A%22%22%7D" style="width:100%;height:100%;"></iframe></div></div>
+  <div class="chart-box"><div class="chart-title">BTCUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ABTCUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
   <div class="chart-box"><div class="chart-title">ETHUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3AETHUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
   <div class="chart-box"><div class="chart-title">BNBUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ABNBUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
-  <div class="chart-box"><div class="chart-title">SOLUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3ASOLUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
-  <div class="chart-box"><div class="chart-title">XRPUSDT</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22BINANCE%3AXRPUSDT%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
-  <div class="chart-box"><div class="chart-title">الذهب (XAUUSD)</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22OANDA%3AXAUUSD%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
-  <div class="chart-box"><div class="chart-title">الفضة (XAGUSD)</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22OANDA%3AXAGUSD%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
-  <div class="chart-box"><div class="chart-title">نفط WTI</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22NYMEX%3ACL1!%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
-  <div class="chart-box"><div class="chart-title">نفط برنت</div><div style="height:250px"><iframe scrolling="no" allowtransparency="true" frameborder="0" src="https://s.tradingview.com/embed-widget/mini-symbol-overview/?locale=ar#%7B%22symbol%22%3A%22ICEUS%3ABRN1!%22%2C%22width%22%3A%22100%25%22%2C%22height%22%3A%22100%25%22%2C%22dateRange%22%3A%221D%22%2C%22colorTheme%22%3A%22dark%22%2C%22isTransparent%22%3Atrue%2C%22autosize%22%3Atrue%7D" style="width:100%;height:100%;"></iframe></div></div>
 </div>
 </article>
 
@@ -751,11 +739,22 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
 <article><h2>📈 أسعار الأسواق المباشرة (Yahoo Finance)</h2>
 <table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state"></small></article>
 
-<article><h2>📊 أرباح وخسائر اليوم</h2><div id="daily-pnl">جاري العرض...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث أرباح وخسائر اليوم</button></form></article>
-
 <article><h2>مراكز Binance الحالية</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>الربح/الخسارة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز مفتوحة</td></tr>{% endfor %}</table></article>
 
-<article><h2>سجل الأوامر المنفذة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main>
+<article><h2>سجل الأوامر المنفذة</h2>
+<table><thead><tr><th>الوقت والتاريخ</th><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr></thead><tbody>
+{% for x in recent %}
+<tr>
+  <td style="color:#38bdf8;font-size:0.9em;">{{ x.created_at.strftime('%Y-%m-%d %H:%M:%S') if x.created_at else '—' }}</td>
+  <td>{{x.symbol}}</td>
+  <td>{{x.direction}}</td>
+  <td>{{x.status}}</td>
+  <td><small>{{x.note or '—'}}</small></td>
+</tr>
+{% else %}
+<tr><td colspan="5">لا توجد محاولات مسجلة بعد</td></tr>
+{% endfor %}
+</tbody></table></article>{% endif %}</main>
 <script>
 (function(){
  const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
@@ -776,17 +775,8 @@ html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;c
      document.getElementById('price-state').textContent='المصدر: Yahoo Finance';
    }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار مؤقتًا';}
  }
- async function refreshPnL(){
-   try{
-     const r=await fetch('/api/daily-pnl',{credentials:'same-origin',cache:'no-store'});
-     if(!r.ok)throw Error('pnl');
-     const p=await r.json();
-     document.getElementById('daily-pnl').textContent='أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم '+p.fees_funding+' USDT | الصافي '+p.net+' USDT';
-   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مسجلة بعد.';}
- }
- refreshMarket();refreshPnL();
- setInterval(refreshMarket,30000);
- setInterval(refreshPnL,120000);
+ refreshMarket();
+ setInterval(refreshMarket,10000);
 
  async function checkBan(){
    try{
@@ -819,17 +809,6 @@ body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20p
   <p><strong>رابط الإحالة الخاص بك:</strong> <input type="text" value="https://alkuwaiti-bot.onrender.com/investors?ref={{user.referral_code}}" readonly onclick="this.select()"></p>
   <p><a href="{{url_for('investor_logout')}}">🚪 تسجيل خروج</a></p>
 </article>
-<article>
-  <h2>💎 ترقية باقة الاشتراك</h2>
-  <form method="post" action="{{url_for('upgrade_tier')}}">
-    <input type="hidden" name="csrf" value="{{csrf}}">
-    <select name="tier" style="padding:12px;width:100%;background:#101827;color:white;border-radius:8px">
-      <option value="PRO">الباقة المتقدمة (Pro) - 50 صفقة يومياً</option>
-      <option value="VIP">الباقة الاحترافية (VIP) - 100 صفقة يومياً + أولوية التنفيذ</option>
-    </select>
-    <button type="submit" style="background:#2563eb">ترقية الباقة الآن</button>
-  </form>
-</article>
 {% else %}<article>
   <h2>تسجيل دخول المستثمرين</h2>
   <form method="post" action="{{url_for('investor_login')}}">
@@ -837,16 +816,6 @@ body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20p
     <input type="email" name="email" placeholder="البريد الإلكتروني" required>
     <input type="password" name="password" placeholder="كلمة المرور" required>
     <button>دخول</button>
-  </form>
-</article>
-<article>
-  <h2>تسجيل حساب جديد (مع إحالة اختيارية)</h2>
-  <form method="post" action="{{url_for('investor_register')}}">
-    <input type="hidden" name="csrf" value="{{csrf}}">
-    <input type="email" name="email" placeholder="البريد الإلكتروني" required>
-    <input type="password" name="password" placeholder="كلمة المرور الجديدة" required>
-    <input type="text" name="ref" placeholder="كود الإحالة (اختياري)">
-    <button style="background:#15803d">إنشاء حساب مستثمر</button>
   </form>
 </article>{% endif %}
 <p><a href="{{url_for('home')}}">العودة للرئيسية</a></p></main></html>'''
@@ -897,20 +866,6 @@ def investor_login():
     except Exception as e:flash(str(e)[:140])
     return redirect(url_for('investors'))
 
-@app.route('/investors/upgrade',methods=['POST'])
-def upgrade_tier():
-    if not session.get('investor_id'): return redirect(url_for('investors'))
-    try:
-        check_csrf(); init_investors_system()
-        tier=request.form.get('tier','PRO')
-        if tier not in ('PRO','VIP'): raise ValueError('باقة غير صالحة')
-        with db() as conn, conn.cursor() as c:
-            c.execute("UPDATE investor_accounts SET subscription_tier=%s WHERE id=%s", (tier, session['investor_id']))
-        flash(f'تم ترقية حسابك إلى باقة {tier} بنجاح.')
-    except Exception as e:
-        flash('فشل الترقية: '+str(e)[:100])
-    return redirect(url_for('investors'))
-
 @app.route('/investors/logout')
 def investor_logout():
     session.clear();return redirect(url_for('investors'))
@@ -924,14 +879,8 @@ def owner_investors():
         c.execute('SELECT id,email,subscription_tier,referral_code,created_at FROM investor_accounts ORDER BY id DESC LIMIT 300');users=c.fetchall()
     return render_template_string("<html><body style='background:#101827;color:#fff;font-family:system-ui;padding:20px'><h1>إدارة المشتركين</h1><p>إجمالي المشتركين: {{count}}</p><table width='100%' border='1' style='border-collapse:collapse'><tr><th>البريد</th><th>الباقة</th><th>كود الإحالة</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.email}}</td><td>{{u.subscription_tier}}</td><td>{{u.referral_code}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table><p><a href='/' style='color:#70d9ff'>الرئيسية</a></p></body></html>", count=count, users=users)
 
-@app.route('/owner/requests')
-@auth
-def owner_requests_page():
-    return render_template_string("<html><body style='background:#101827;color:#fff;font-family:system-ui;padding:20px'><h1>الطلبات والموافقات</h1><a href='/' style='color:#70d9ff'>الرئيسية</a></body></html>")
-
 @app.route('/backtest')
 def backtest_simulator():
-    """محاكي الاختبار التاريخي الاستراتيجي البسيط"""
     try:
         candles=public('/fapi/v1/klines',{'symbol':'BTCUSDT','interval':'5m','limit':100})[:-1]
         closes=[float(c[4]) for c in candles]
@@ -998,7 +947,7 @@ def home():
         today_trades = get_today_trades_count()
         monitor_close_suggestions()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
-            c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 25');recent=c.fetchall()
+            c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 30');recent=c.fetchall()
             c.execute('SELECT * FROM bot_scan_status WHERE id=1');scan_state=c.fetchone()
     except Exception as e: flash('DB Error: '+str(e)[:160])
     snapshot_at=None
