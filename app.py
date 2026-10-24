@@ -1,7 +1,7 @@
 """
-Alkuwaiti Bot V56 - Ultimate Enterprise Edition (Unabridged)
+Alkuwaiti Bot V57 - Grand Master Enterprise Edition (Unabridged)
 Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
-Rate-Limit Protection & Auto-Cooldown, Cron-Job Scan Endpoint,
+Rate-Limit Protection & Auto-Cooldown, Direct Unauthenticated Cron-Job Scan,
 Yahoo & WS Live Price Feeds, TradingView Charts, Backtest Simulator,
 Bank Accounts Management, Subscription Approvals & Terms Gate.
 """
@@ -313,30 +313,31 @@ def binance_ban_status():
     return _cooldown_state(force=True)
 
 # ---------------------------------------------------------
-# NEW: Cron-Job API Endpoint (Fixes 405 Method Not Allowed)
+# DIRECT CRON SCAN ENDPOINT (No Login Required - Fixes 302)
 # ---------------------------------------------------------
 @app.route('/cron/scan', methods=['GET', 'POST'])
 @app.route('/api/scan', methods=['GET', 'POST'])
 def cron_scan_market():
-    """مسار مخصص لاستقبال طلبات Cron-job سواء كانت GET أو POST"""
+    """مسار فحص مباشر ومفتوح للـ Cron-Job بدون الحاجة لتسجيل دخول مسبق"""
     try:
         init()
         if is_bot_paused():
-            return {'status': 'PAUSED', 'message': 'البوت متوقف حالياً'}, 200
+            return {'status': 'PAUSED', 'message': 'التداول متوقف حالياً من مفتاح الإيقاف'}, 200
         
-        # إجراء فحص الأسواق
         opps = 0
-        for sym in SYMBOLS[:3]: # فحص العينات الأساسية
+        for sym in SYMBOLS[:3]:
             prop = proposal(sym)
-            if prop: opps += 1
+            if prop:
+                opps += 1
 
         with db() as conn, conn.cursor() as c:
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(), opportunities=%s, reason=%s WHERE id=1",
-                      (opps, 'تم الفحص تلقائياً عبر Cron-Job'))
+                      (opps, 'تم الفحص المباشر بنجاح عبر Cron-Job'))
 
         return {
             'status': 'SUCCESS',
             'opportunities_found': opps,
+            'message': 'تم تنفيذ الفحص المباشر بنجاح بدون قيود تسجيل الدخول',
             'timestamp': datetime.now(timezone.utc).isoformat()
         }, 200
     except Exception as e:
@@ -477,7 +478,7 @@ PAGE = '''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>البوت الكويتي - V56 Enterprise Edition</title>
+<title>البوت الكويتي - V57 Enterprise Edition</title>
 <style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}
 main{max-width:1150px;margin:auto;padding:16px}
@@ -519,7 +520,7 @@ window.onload = function(){
 <body>
 <main>
 <div class="top-bar">
-  <div><strong>🇰🇼 البوت الكويتي V56 Enterprise</strong></div>
+  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise</strong></div>
   <div id="live-clock" class="clock-box">جاري تحميل الوقت...</div>
   <div>
     <select id="lang-selector" onchange="changeLanguage(this)" style="background:#202d40;color:white;border:1px solid #435069">
