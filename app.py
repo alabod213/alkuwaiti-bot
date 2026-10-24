@@ -174,12 +174,14 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('⚠️ محظور مؤقتًا من Binance. نوع الحظر: '+str(state['reason'])+' | المتبقي: '+str(state['remaining_seconds'])+' ثانية.')
 
-REST_MIN_INTERVAL_SECONDS = max(0.5, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '0.5')))
+# رفع الحد الأدنى للفصل الزمني بين الطلبات لحماية الحساب من الحظر (تم زيادته إلى 1.2 ثانية لتجنب الـ 418 تماماً)
+REST_MIN_INTERVAL_SECONDS = max(1.2, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '1.2')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
-BINANCE_SCAN_INTERVAL_SECONDS = max(30, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','30')))
+BINANCE_SCAN_INTERVAL_SECONDS = max(60, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','60')))
 _scan_local = threading.local()
 
-BINANCE_WEIGHT_BUDGET_1M = min(1500, max(200, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '1200'))))
+# تخفيض ميزانية الوزن لضمان عدم تجاوز الحد المسموح في دقيقة واحدة
+BINANCE_WEIGHT_BUDGET_1M = min(800, max(200, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '600'))))
 
 def _endpoint_weight(path, params=None):
     if path == '/fapi/v1/income': return 40
@@ -405,7 +407,7 @@ def auto_scan():
         c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
         c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
                      AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
-                  (BINANCE_SCAN_INTERVAL_SECONDS,))
+                  (60,)) # زيادة الفاصل الزمني بين الفحوصات الآلية لحماية الحساب تماماً
         if not c.fetchone(): return {'status':'rate_limited','created':0}
 
     _scan_local.signed_cache={}
@@ -432,13 +434,13 @@ def _auto_scan_body():
                     signal=proposal(sym)
                     if not signal:
                         rejected[sym]='لا توجد إشارة'
-                        time.sleep(0.3)
+                        time.sleep(1.0) # زيادة فترة التوقف المؤقت بين فحص العملات لمنع أي ضغط على الـ API
                         continue
                     direction,entry,stop,take=signal
                     c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','OPEN_AUTO','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
                     if c.fetchone():
                         rejected[sym]='مركز سابق مفتوح'
-                        time.sleep(0.3)
+                        time.sleep(1.0)
                         continue
                     
                     order, protect, qty = direct_execute_trade(sym, direction, entry, stop, take, info)
@@ -448,7 +450,7 @@ def _auto_scan_body():
                     executed+=1
                 except Exception as e:
                     rejected[sym]=str(e)[:110]
-                time.sleep(0.3)
+                time.sleep(1.0)
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(executed,str(rejected)[:1800]))
             return {'status':'ok','executed':executed,'excluded':len(rejected)}
         finally:
@@ -492,7 +494,6 @@ def scheduled_scan():
     expected = str(os.environ.get('SCAN_CRON_TOKEN', '')).strip()
     provided = str(request.headers.get('X-Scan-Token', '')).strip()
     
-    # تحويل القيم إلى بايتات (Bytes) لمنع خطأ non-ASCII تماماً عند المقارنة
     expected_bytes = expected.encode('utf-8', errors='ignore')
     provided_bytes = provided.encode('utf-8', errors='ignore')
     
@@ -589,12 +590,12 @@ def _v37_auto_refresh():
     global _v37_last_check
     with _v37_refresh_lock:
         now=time.monotonic()
-        if now-_v37_last_check<120:return
+        if now-_v37_last_check<180:return # زيادة الفاصل الزمني للتحديث التلقائي للحساب
         _v37_last_check=now
     try:
         _assert_binance_available()
         if not BINANCE_AUTO_ACCOUNT_ENABLED:return
-        if _snapshot_reserve('v37_auto_account',1200):
+        if _snapshot_reserve('v37_auto_account',1800):
             try:
                 account=signed('GET','/fapi/v2/account')
                 positions_data=signed('GET','/fapi/v2/positionRisk')
@@ -603,7 +604,7 @@ def _v37_auto_refresh():
                 _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
             except Exception as e:
                 logging.warning('V37 automatic account update deferred: %s',str(e)[:140])
-        if _snapshot_reserve('v37_auto_pnl',3600):
+        if _snapshot_reserve('v37_auto_pnl',7200):
             try:_snapshot_put('pnl',_daily_pnl_from_binance())
             except Exception as e:logging.warning('V37 automatic PnL update deferred: %s',str(e)[:140])
     except Exception as e:
