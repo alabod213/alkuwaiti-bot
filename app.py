@@ -1,6 +1,6 @@
-"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (Full Features & Strict Anti-Ban)
-Fully integrated Binance Futures automated trading, ban protection, Yahoo live prices, daily PnL,
-simultaneous TradingView 9-assets grid, tiers, referrals, and backtesting simulator.
+"""Alkuwaiti Bot V45 - Ultimate Enterprise Edition (Full Features, Language Switcher & Strict Anti-Ban)
+Fully integrated Binance Futures automated trading, WebSocket real-time streams, ban protection,
+Yahoo live prices, daily PnL, TradingView grid, tiers, referrals, and backtesting simulator.
 """
 import os, time, hmac, hashlib, secrets, logging, threading, re, json
 from datetime import datetime, timezone, timedelta
@@ -190,7 +190,7 @@ def _record_limit(response):
         until=int(match.group(1))
         reason='حظر رسمي مؤقت من Binance (رمز الحظر 418)'
     else:
-        wait=1800 # 30 دقيقة أمان تام عند حدوث أي تجاوز
+        wait=1800
         until=now_ms+wait*1000
         reason='حظر Binance الرسمي (418) أو تجاوز حدود المعدل'
     with _ban_lock:
@@ -209,7 +209,6 @@ def _assert_binance_available():
     if state['remaining_seconds']>0:
         raise ValueError('⚠️ محظور مؤقتًا من Binance. نوع الحظر: '+str(state['reason'])+' | المتبقي: '+str(state['remaining_seconds'])+' ثانية.')
 
-# فاصل زمني آمن وطويل (3.0 ثواني) بين طلبات REST لمنع الحظر نهائياً
 REST_MIN_INTERVAL_SECONDS = max(3.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '3.0')))
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','true').lower() == 'true'
 _scan_local = threading.local()
@@ -267,7 +266,7 @@ def signed(method,path,params=None):
     if not KEY or not SECRET: raise ValueError('مفاتيح Binance غير موجودة في الإعدادات')
     p=dict(params or {});p['timestamp']=int(time.time()*1000);p['recvWindow']=5000
     q=urlencode(p);sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
-    time.sleep(REST_MIN_INTERVAL_SECONDS) # تأخير إضافي صارم
+    time.sleep(REST_MIN_INTERVAL_SECONDS)
     r=requests.request(method,BASE+path,params=q+'&signature='+sig,headers={'X-MBX-APIKEY':KEY},timeout=15)
     _record_limit(r)
     if not r.ok:
@@ -444,7 +443,7 @@ def auto_scan():
         c.execute('INSERT INTO bot_scan_gate(id) VALUES(1) ON CONFLICT DO NOTHING')
         c.execute('''UPDATE bot_scan_gate SET started_at=NOW() WHERE id=1
                      AND (started_at IS NULL OR started_at < NOW()-(%s * INTERVAL '1 second')) RETURNING id''',
-                  (120,)) # زيادة المدة بين الفحوصات التلقائية لمنع أي ضغط
+                  (120,))
         if not c.fetchone(): return {'status':'rate_limited','created':0}
     _scan_local.signed_cache={}
     try:
@@ -496,7 +495,7 @@ def _auto_scan_body():
                     rejected[sym]=str(e)[:110]
                     c.execute("""INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference,status,note)
                                  VALUES(%s,'LONG',0,0,0,'EXPIRED',%s)""", (sym, str(e)[:100]))
-                time.sleep(2.5) # فاصل زمني واسع وآمن جداً بين العملات
+                time.sleep(2.5)
             c.execute("UPDATE bot_scan_status SET checked_at=NOW(),opportunities=%s,reason=%s WHERE id=1",(executed,str(rejected)[:1800]))
             return {'status':'ok','executed':executed,'excluded':len(rejected)}
         finally:
@@ -734,16 +733,43 @@ html[data-theme="light"] .warn{color:#8b5500!important}
 html[data-theme="light"] td,html[data-theme="light"] th{border-color:#dce4ee!important}
 html[data-theme="light"] input,html[data-theme="light"] select{background:#fff;color:#172438;border:1px solid #b9c9d9}
 .logout-link{display:inline-block;padding:10px 14px;background:#a52e45!important;color:white!important;border-radius:10px;text-decoration:none;font-weight:700}
-.theme-switch{display:inline-block;margin:8px 0;padding:9px 12px;background:#315174;color:white;border:0;border-radius:9px;cursor:pointer}
+.theme-switch, .lang-switch{display:inline-block;margin:8px 4px;padding:9px 12px;background:#315174;color:white;border:0;border-radius:9px;cursor:pointer}
 .charts-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:10px}
 .chart-box{background:#182232;border:1px solid #33445c;border-radius:10px;padding:8px}
 .chart-title{font-weight:bold;margin-bottom:6px;color:#38bdf8;text-align:center}
 </style><script>(function(){
   function hour(){return Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kuwait',hour:'2-digit',hourCycle:'h23'}).format(new Date()))}
-  function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
-  window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
-  apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V45 (Enterprise Edition)</h1><p class="warn">⚠️ التداول الحقيقي والآلي مفعل تماماً (الحد الأقصى: 100 صفقة يومياً)</p>
+  function applyTheme(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي');}
+  
+  window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};applyTheme()};
+
+  window.toggleAlkuwaitiLanguage=function(){
+    let lang = document.documentElement.lang === 'en' ? 'ar' : 'en';
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === 'en' ? 'ltr' : 'rtl';
+    try{localStorage.setItem('alkuwaiti-lang', lang)}catch(e){};
+    updateLangUI(lang);
+  };
+
+  function applyLang(){
+    let lang = localStorage.getItem('alkuwaiti-lang') || 'ar';
+    document.documentElement.lang = lang;
+    document.documentElement.dir = lang === 'en' ? 'ltr' : 'rtl';
+    updateLangUI(lang);
+  }
+
+  function updateLangUI(lang){
+    let btn = document.getElementById('lang-switch');
+    if(btn) btn.textContent = lang === 'en' ? '🌐 Language: English' : '🌐 اللغة: عربي';
+  }
+
+  applyTheme();
+  applyLang();
+  document.addEventListener('DOMContentLoaded', ()=>{applyTheme(); applyLang();});
+})();</script><main>
+<button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button>
+<button id="lang-switch" type="button" class="lang-switch" onclick="toggleAlkuwaitiLanguage()">🌐 اللغة: عربي</button>
+<h1>🇰🇼 البوت الكويتي V45 (Enterprise Edition)</h1><p class="warn">⚠️ التداول الحقيقي والآلي مفعل تماماً (الحد الأقصى: 100 صفقة يومياً)</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
 {% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
 {% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a> | <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a></p>
