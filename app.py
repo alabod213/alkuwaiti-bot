@@ -1,13 +1,9 @@
 """
-Alkuwaiti Bot V54 - Grand Master Enterprise Edition
---------------------------------------------------
-Full Unabridged Automated Trading Engine for Binance Futures
-EMA / ATR Technical Signals, Live Rate-Limit Anti-Ban Counter,
-Live Multi-Source Price Feeds (Yahoo Finance & WebSockets),
-Backtest Performance Simulator, Interactive TradingView Charts,
-Multi-Currency & Bank Accounts Management System,
-Investor Subscription Approval, Rejection & Cancellation Controls,
-Mandatory Terms & Conditions Agreement Gate.
+Alkuwaiti Bot V55 - Ultimate Enterprise Edition (Unabridged)
+Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
+Rate-Limit Protection & Auto-Cooldown, Yahoo & WS Live Price Feeds,
+TradingView Charts, Backtest Simulator, Bank Accounts Management,
+Subscription Approvals & Cancellations, Mandatory Terms Agreement.
 """
 
 import os
@@ -20,7 +16,7 @@ import threading
 import re
 import json
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_DOWN, ROUND_UP
+from decimal import Decimal, ROUND_DOWN
 from functools import wraps
 from urllib.parse import urlencode
 
@@ -32,9 +28,6 @@ from flask import Flask, request, session, redirect, url_for, flash, render_temp
 from werkzeug.security import check_password_hash, generate_password_hash
 from cryptography.fernet import Fernet
 
-# ---------------------------------------------------------
-# Flask Application Setup & Configurations
-# ---------------------------------------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
 app.config.update(
@@ -45,10 +38,10 @@ app.config.update(
 )
 
 BASE = os.environ.get('BINANCE_BASE_URL', 'https://fapi.binance.com').rstrip('/')
-MAX_DAILY_TRADES = 100
+MAX_DAILY_TRADES = 100 
 LIVE = True
 D = Decimal
-TARGET_NET_ROI = D('0.02')
+TARGET_NET_ROI = D('0.008')  # تم تخفيضها إلى 0.8% لتمرير الصفقات وتجنب انتهاء الصلاحية
 ESTIMATED_ROUND_TRIP_COST = D('0.002')
 
 logging.basicConfig(level=logging.INFO)
@@ -59,9 +52,6 @@ SYMBOLS = (
     'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'NEARUSDT'
 )
 
-# ---------------------------------------------------------
-# Encryption & Key Retrieval System
-# ---------------------------------------------------------
 def credentials():
     master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
     if master:
@@ -74,7 +64,7 @@ def credentials():
     return os.environ.get('BINANCE_API_KEY', ''), os.environ.get('BINANCE_API_SECRET', '')
 
 # ---------------------------------------------------------
-# WebSocket System for Live Market Price Feeds
+# WebSocket System for Real-time Price Tracking
 # ---------------------------------------------------------
 _ws_market_data = {}
 _ws_lock = threading.Lock()
@@ -86,36 +76,21 @@ def on_message(ws, message):
             symbol = data['s']
             close_price = data['k']['c']
             with _ws_lock:
-                _ws_market_data[symbol] = {
-                    'price': float(close_price),
-                    'time': time.time()
-                }
+                _ws_market_data[symbol] = {'price': float(close_price), 'time': time.time()}
     except Exception:
         pass
 
-def on_error(ws, error):
-    pass
-
+def on_error(ws, error): pass
 def on_close(ws, close_status_code, close_msg):
     time.sleep(10)
     start_binance_ws()
 
 def on_open(ws):
     streams = [f"{s.lower()}@kline_5m" for s in SYMBOLS]
-    ws.send(json.dumps({
-        "method": "SUBSCRIBE",
-        "params": streams,
-        "id": 1
-    }))
+    ws.send(json.dumps({"method": "SUBSCRIBE", "params": streams, "id": 1}))
 
 def start_binance_ws():
-    ws = websocket.WebSocketApp(
-        "wss://fstream.binance.com/ws",
-        on_open=on_open,
-        on_message=on_message,
-        on_error=on_error,
-        on_close=on_close
-    )
+    ws = websocket.WebSocketApp("wss://fstream.binance.com/ws", on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close)
     threading.Thread(target=ws.run_forever, daemon=True).start()
 
 try:
@@ -124,7 +99,7 @@ except Exception:
     pass
 
 # ---------------------------------------------------------
-# PostgreSQL Database Connections & Tables Initializations
+# Database Infrastructure & Initializations
 # ---------------------------------------------------------
 def db():
     return psycopg2.connect(os.environ['DATABASE_URL'], connect_timeout=8, sslmode='require')
@@ -133,9 +108,9 @@ def init():
     with db() as conn, conn.cursor() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS bot_preferences (
             id INTEGER PRIMARY KEY CHECK (id=1),
-            max_exposure_pct NUMERIC NOT NULL DEFAULT 25,
+            max_exposure_pct NUMERIC NOT NULL DEFAULT 50,
             max_leverage INTEGER NOT NULL DEFAULT 15,
-            target_roi_pct NUMERIC NOT NULL DEFAULT 2.0,
+            target_roi_pct NUMERIC NOT NULL DEFAULT 0.8,
             admin_email TEXT DEFAULT '',
             updated_at TIMESTAMPTZ DEFAULT NOW())''')
         c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
@@ -289,7 +264,7 @@ def _assert_binance_available():
     if state['remaining_seconds'] > 0:
         raise ValueError(f"⚠️ محظور مؤقتاً من Binance. السبب: {state['reason']} | المتبقي: {state['remaining_seconds']} ثانية")
 
-REST_MIN_INTERVAL_SECONDS = 4.0
+REST_MIN_INTERVAL_SECONDS = 4.0  # زيادة الفاصل الزمني لمنع الحظر
 
 def signed(method, path, params=None):
     _assert_binance_available()
@@ -316,9 +291,6 @@ def public(path, p=None):
     r.raise_for_status()
     return r.json()
 
-# ---------------------------------------------------------
-# Security, Authentication & CSRF Helpers
-# ---------------------------------------------------------
 def auth(f):
     @wraps(f)
     def wrap(*a, **kw):
@@ -341,7 +313,7 @@ def binance_ban_status():
     return _cooldown_state(force=True)
 
 # ---------------------------------------------------------
-# Technical Analysis Strategy (EMA & ATR Calculations)
+# Technical Analysis Algorithms (EMA & ATR Calculation)
 # ---------------------------------------------------------
 def ema(vals, n):
     v = sum(vals[:n]) / n
@@ -356,8 +328,7 @@ def proposal(symbol):
     lows = [float(c[3]) for c in candles]
     if len(closes) < 30:
         return None
-    fast = ema(closes, 10)
-    slow = ema(closes, 30)
+    fast, slow = ema(closes, 10), ema(closes, 30)
     direction = 'LONG' if fast > slow else 'SHORT'
     trs = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1])) for i in range(1, len(closes))]
     atr = sum(trs[-14:]) / 14
@@ -410,10 +381,7 @@ def market_prices():
                 with _ws_lock:
                     ws_item = _ws_market_data.get(symbol)
                 if ws_item and (time.time() - ws_item['time'] < 15):
-                    result[symbol] = {
-                        'price': ws_item['price'],
-                        'asof': datetime.fromtimestamp(ws_item['time'], timezone.utc).isoformat()
-                    }
+                    result[symbol] = {'price': ws_item['price'], 'asof': datetime.fromtimestamp(ws_item['time'], timezone.utc).isoformat()}
                     continue
                 try:
                     r = requests.get(
@@ -433,12 +401,7 @@ def market_prices():
                 except Exception:
                     result[symbol] = {'price': None, 'asof': None}
             _external_cache.update(at=now, checked_at=datetime.now(timezone.utc).isoformat(), prices=result)
-        return {
-            'prices': _external_cache['prices'],
-            'checked_at': _external_cache['checked_at'],
-            'source': 'Yahoo Finance / WS',
-            'realtime': True
-        }
+        return {'prices': _external_cache['prices'], 'checked_at': _external_cache['checked_at'], 'source': 'Yahoo Finance / WS', 'realtime': True}
 
 # ---------------------------------------------------------
 # Backtest Simulator
@@ -462,9 +425,7 @@ def backtest_simulator():
         total = wins + losses
         win_rate = (wins / total * 100) if total > 0 else 0
     except Exception:
-        wins = 0
-        losses = 0
-        win_rate = 0
+        wins, losses, win_rate = 0, 0, 0
     return render_template_string("""
         <html>
         <body style="background:#101827;color:#fff;font-family:system-ui;padding:20px;text-align:center">
@@ -486,7 +447,7 @@ PAGE = '''<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>البوت الكويتي - V54 Grand Master Enterprise Edition</title>
+<title>البوت الكويتي - V55 Enterprise Edition</title>
 <style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}
 main{max-width:1150px;margin:auto;padding:16px}
@@ -528,7 +489,7 @@ window.onload = function(){
 <body>
 <main>
 <div class="top-bar">
-  <div><strong>🇰🇼 البوت الكويتي V54 Grand Master Enterprise</strong></div>
+  <div><strong>🇰🇼 البوت الكويتي V55 Enterprise</strong></div>
   <div id="live-clock" class="clock-box">جاري تحميل الوقت...</div>
   <div>
     <select id="lang-selector" onchange="changeLanguage(this)" style="background:#202d40;color:white;border:1px solid #435069">
