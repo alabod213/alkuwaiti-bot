@@ -2,6 +2,7 @@
 Alkuwaiti Bot V57 - Grand Master Enterprise Edition (Unabridged)
 Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
 Rate-Limit Protection & Auto-Cooldown, Direct Unauthenticated Cron-Job Scan,
+Direct UI API Key Management & Live Balance Fetcher,
 Yahoo & WS Live Price Feeds, TradingView Charts, Backtest Simulator,
 Bank Accounts Management, Subscription Approvals & Terms Gate.
 """
@@ -52,15 +53,23 @@ SYMBOLS = (
     'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'NEARUSDT'
 )
 
+def get_encryption_suite():
+    master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
+    if not master:
+        master = Fernet.generate_key().decode()
+    return Fernet(master.encode() if isinstance(master, str) else master)
+
 def credentials():
     master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
-    if master:
+    try:
         with db() as conn, conn.cursor() as c:
             c.execute("SELECT api_key_cipher, api_secret_cipher FROM bot_api_credentials WHERE id=1")
             row = c.fetchone()
-        if row:
+        if row and master:
             f = Fernet(master.encode())
             return f.decrypt(bytes(row[0])).decode(), f.decrypt(bytes(row[1])).decode()
+    except Exception:
+        pass
     return os.environ.get('BINANCE_API_KEY', ''), os.environ.get('BINANCE_API_SECRET', '')
 
 # ---------------------------------------------------------
@@ -202,6 +211,19 @@ def is_bot_paused():
         c.execute('SELECT is_paused FROM bot_preferences WHERE id=1')
         row = c.fetchone()
     return bool(row[0]) if row else False
+
+def get_binance_balance():
+    """جلب الرصيد المتاح في محفظة العقود الآجلة بايننس"""
+    try:
+        res = signed('GET', '/fapi/v2/account')
+        if isinstance(res, dict):
+            assets = res.get('assets', [])
+            usdt_item = next((a for a in assets if a.get('asset') == 'USDT'), None)
+            if usdt_item:
+                return float(usdt_item.get('availableBalance', 0))
+    except Exception:
+        pass
+    return None
 
 def allowed_leverage(symbol, requested):
     brackets = signed('GET', '/fapi/v1/leverageBracket', {'symbol': symbol})
@@ -559,11 +581,34 @@ window.onload = function(){
   <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a>
 </p>
 
+<!-- عرض الرصيد المباشر من بايننس -->
+<article style="border:2px solid #38bdf8;background:#182232">
+  <h2 style="color:#38bdf8;margin:0 0 10px 0">💰 رصيد محفظة العقود الآجلة المتاح</h2>
+  <p style="font-size:1.5em;font-weight:bold;margin:0">
+    {% if balance is not none %}
+      <span style="color:#86efac">{{balance}} USDT</span>
+    {% else %}
+      <span style="color:#f87171">تعذر الجلب (تأكد من صحة مفاتيح الـ API)</span>
+    {% endif %}
+  </p>
+</article>
+
 <!-- عداد الحظر المباشر -->
 <article id="ban-box" style="border:2px solid #ef4444;background:#1a202c">
   <h2 style="color:#f87171;margin:0 0 10px 0">🛡️ حالة الاتصال وعداد حظر Binance</h2>
   <p><strong>حالة النظام:</strong> <span id="ban-reason" style="color:#fca5a5">جاري الفحص...</span></p>
   <p><strong>الوقت المتبقي لرفع الحظر:</strong> <span id="ban-timer" style="font-size:1.3em;font-weight:bold;color:#38bdf8">0 ثانية</span></p>
+</article>
+
+<!-- إعدادات مفاتيح API -->
+<article style="border:2px solid #238657">
+  <h2>🔑 إعدادات وتحديث مفاتيح Binance API</h2>
+  <form method="post" action="/settings/api-keys">
+    <input type="hidden" name="csrf" value="{{csrf}}">
+    <input type="text" name="api_key" placeholder="Binance API Key الجديد" style="width:100%;margin-bottom:8px" required>
+    <input type="password" name="api_secret" placeholder="Binance API Secret الجديد" style="width:100%;margin-bottom:8px" required>
+    <button style="background:#238657">حفظ وتشفير مفاتيح الربط</button>
+  </form>
 </article>
 
 <article style="border:2px solid #d97706">
@@ -1024,6 +1069,31 @@ def update_user_details():
         flash('تعذر الحفظ: ' + str(e)[:120])
     return redirect(url_for('owner_investors'))
 
+@app.route('/settings/api-keys', methods=['POST'])
+@auth
+def save_api_keys():
+    try:
+        check_csrf()
+        key = request.form.get('api_key', '').strip()
+        secret = request.form.get('api_secret', '').strip()
+        if not key or not secret:
+            raise ValueError('أدخل مفتاحي الـ API والـ Secret بشكل صحيح')
+        
+        f = get_encryption_suite()
+        k_cipher = f.encrypt(key.encode())
+        s_cipher = f.encrypt(secret.encode())
+
+        init()
+        with db() as conn, conn.cursor() as c:
+            c.execute("""INSERT INTO bot_api_credentials(id, api_key_cipher, api_secret_cipher, updated_at)
+                         VALUES(1, %s, %s, NOW())
+                         ON CONFLICT(id) DO UPDATE SET api_key_cipher=%s, api_secret_cipher=%s, updated_at=NOW()""",
+                      (k_cipher, s_cipher, k_cipher, s_cipher))
+        flash('🔑 تم حفظ وتشفير مفاتيح بايننس API بنجاح.')
+    except Exception as e:
+        flash('تعذر حفظ المفاتيح: ' + str(e)[:120])
+    return redirect(url_for('home'))
+
 @app.route('/settings/admin-email', methods=['POST'])
 @auth
 def save_admin_email():
@@ -1079,14 +1149,16 @@ def logout():
 @auth
 def home():
     recent = []
+    balance = None
     try:
         init()
+        balance = get_binance_balance()
         with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute('SELECT * FROM bot_orders_v2 ORDER BY id DESC LIMIT 30')
             recent = c.fetchall()
     except Exception as e:
-        flash('خطأ قاعدة البيانات: ' + str(e)[:160])
-    return render_template_string(PAGE, logged=True, csrf=csrf(), recent=recent, prefs=preferences())
+        flash('خطأ أو تحذير: ' + str(e)[:160])
+    return render_template_string(PAGE, logged=True, csrf=csrf(), recent=recent, prefs=preferences(), balance=balance)
 
 # ---------------------------------------------------------
 # Application Entry Point
