@@ -1,5 +1,5 @@
 """
-Alkuwaiti Bot V57 - Grand Master Enterprise Edition (Unabridged)
+Alkuwaiti Bot V57 - Grand Master Enterprise Edition (Complete & Unabridged)
 Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
 Rate-Limit Protection & Auto-Cooldown, Direct Unauthenticated Cron-Job Scan,
 Direct UI API Key Management & Live Balance Fetcher,
@@ -189,12 +189,6 @@ def init_investors_system():
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
 
-        c.execute("""CREATE TABLE IF NOT EXISTS password_reset_requests (
-            id BIGSERIAL PRIMARY KEY,
-            investor_id BIGINT REFERENCES investor_accounts(id),
-            status TEXT DEFAULT 'PENDING',
-            created_at TIMESTAMPTZ DEFAULT NOW())""")
-
 def get_today_trades_count():
     with db() as conn, conn.cursor() as c:
         c.execute("SELECT COUNT(*) FROM bot_orders_v2 WHERE created_at >= CURRENT_DATE AND status LIKE 'OPEN%'")
@@ -213,7 +207,6 @@ def is_bot_paused():
     return bool(row[0]) if row else False
 
 def get_binance_balance():
-    """جلب الرصيد المتاح في محفظة العقود الآجلة بايننس"""
     try:
         res = signed('GET', '/fapi/v2/account')
         if isinstance(res, dict):
@@ -225,14 +218,8 @@ def get_binance_balance():
         pass
     return None
 
-def allowed_leverage(symbol, requested):
-    brackets = signed('GET', '/fapi/v1/leverageBracket', {'symbol': symbol})
-    item = brackets[0] if isinstance(brackets, list) else brackets
-    cap = max(int(x['initialLeverage']) for x in item['brackets'])
-    return max(1, min(int(requested), cap, 150))
-
 # ---------------------------------------------------------
-# Anti-Ban Protection & Rate Limit Management
+# Anti-Ban Protection & Rate Limit Management (Hardened)
 # ---------------------------------------------------------
 _ban_lock = threading.RLock()
 _ban_until_ms = 0
@@ -286,7 +273,7 @@ def _assert_binance_available():
     if state['remaining_seconds'] > 0:
         raise ValueError(f"⚠️ محظور مؤقتاً من Binance. السبب: {state['reason']} | المتبقي: {state['remaining_seconds']} ثانية")
 
-REST_MIN_INTERVAL_SECONDS = 4.0
+REST_MIN_INTERVAL_SECONDS = 5.0
 
 def signed(method, path, params=None):
     _assert_binance_available()
@@ -307,7 +294,7 @@ def signed(method, path, params=None):
 
 def public(path, p=None):
     _assert_binance_available()
-    time.sleep(2.0)
+    time.sleep(2.5)
     r = requests.get(BASE + path, params=p, timeout=12)
     _record_limit(r)
     r.raise_for_status()
@@ -340,9 +327,12 @@ def binance_ban_status():
 @app.route('/cron/scan', methods=['GET', 'POST'])
 @app.route('/api/scan', methods=['GET', 'POST'])
 def cron_scan_market():
-    """مسار فحص مباشر ومفتوح للـ Cron-Job بدون الحاجة لتسجيل دخول مسبق"""
     try:
         init()
+        state = _cooldown_state()
+        if state['remaining_seconds'] > 0:
+            return {'status': 'COOLDOWN', 'remaining_seconds': state['remaining_seconds'], 'message': 'البوت في فترة تبريد أمان'}, 200
+
         if is_bot_paused():
             return {'status': 'PAUSED', 'message': 'التداول متوقف حالياً من مفتاح الإيقاف'}, 200
         
@@ -395,22 +385,6 @@ def proposal(symbol):
     if stop <= 0 or take <= 0:
         return None
     return direction, entry, stop, take
-
-def symbol_info(symbol):
-    data = public('/fapi/v1/exchangeInfo')
-    item = next((s for s in data['symbols'] if s['symbol'] == symbol and s['status'] == 'TRADING'), None)
-    if not item:
-        raise ValueError('هذا الرمز غير متاح للتداول حالياً')
-    return item
-
-def floor_step(x, step):
-    return (x / step).to_integral_value(rounding=ROUND_DOWN) * step
-
-def strnum(x):
-    return format(x, 'f')
-
-def positions():
-    return [p for p in signed('GET', '/fapi/v2/positionRisk') if D(p['positionAmt']) != 0]
 
 # ---------------------------------------------------------
 # Yahoo Finance Feed Endpoint & Cache System
@@ -588,7 +562,7 @@ window.onload = function(){
     {% if balance is not none %}
       <span style="color:#86efac">{{balance}} USDT</span>
     {% else %}
-      <span style="color:#f87171">تعذر الجلب (تأكد من صحة مفاتيح الـ API)</span>
+      <span style="color:#f87171">تعذر الجلب (قيد الانتظار أو تحقق من المفاتيح)</span>
     {% endif %}
   </p>
 </article>
@@ -690,7 +664,7 @@ async function updateBanStatus(){
     document.getElementById('ban-timer').textContent = d.remaining_seconds + ' ثانية';
   }catch(e){}
 }
-setInterval(updateBanStatus, 3000);
+setInterval(updateBanStatus, 4000);
 updateBanStatus();
 </script>
 </body>
