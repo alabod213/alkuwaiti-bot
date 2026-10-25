@@ -281,7 +281,6 @@ def _assert_binance_available():
     if state['remaining_seconds'] > 0:
         raise ValueError(f"⚠️ محظور مؤقتاً من Binance. السبب: {state['reason']} | المتبقي: {state['remaining_seconds']} ثانية")
 
-# رفع فاصل الأمان الزمني إلى 6.5 ثانية لمنع الحظر نهائياً
 REST_MIN_INTERVAL_SECONDS = 6.5
 
 def signed(method, path, params=None):
