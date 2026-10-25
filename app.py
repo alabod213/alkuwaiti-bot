@@ -2,7 +2,7 @@
 Alkuwaiti Bot V57 - Grand Master Enterprise Edition (Complete & Unabridged)
 Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
 Rate-Limit Protection & Auto-Cooldown, Direct Unauthenticated Cron-Job Scan,
-Direct UI API Key Management & Live Balance Fetcher (Hardened Fix),
+Direct UI API Key Management & Live Balance Fetcher (Anti-Ban Hardened),
 Yahoo & WS Live Price Feeds, TradingView Charts, Backtest Simulator,
 Bank Accounts Management, Subscription Approvals & Terms Gate.
 """
@@ -206,7 +206,6 @@ def is_bot_paused():
         row = c.fetchone()
     return bool(row[0]) if row else False
 
-# دالة جلب الرصيد المحسنة والمصححة لضمان جلب القيمة دون أخطاء
 def get_binance_balance():
     try:
         res = signed('GET', '/fapi/v2/account')
@@ -215,7 +214,7 @@ def get_binance_balance():
             usdt_item = next((a for a in assets if a.get('asset') == 'USDT'), None)
             if usdt_item:
                 return float(usdt_item.get('availableBalance', 0))
-    except Exception as e:
+    except Exception:
         try:
             res_v1 = signed('GET', '/fapi/v1/account')
             if isinstance(res_v1, dict):
@@ -228,7 +227,7 @@ def get_binance_balance():
     return None
 
 # ---------------------------------------------------------
-# Anti-Ban Protection & Rate Limit Management
+# Anti-Ban Protection & Rate Limit Management (Hardened)
 # ---------------------------------------------------------
 _ban_lock = threading.RLock()
 _ban_until_ms = 0
@@ -282,7 +281,8 @@ def _assert_binance_available():
     if state['remaining_seconds'] > 0:
         raise ValueError(f"⚠️ محظور مؤقتاً من Binance. السبب: {state['reason']} | المتبقي: {state['remaining_seconds']} ثانية")
 
-REST_MIN_INTERVAL_SECONDS = 5.0
+# رفع فاصل الأمان الزمني إلى 6.5 ثانية لمنع الحظر نهائياً
+REST_MIN_INTERVAL_SECONDS = 6.5
 
 def signed(method, path, params=None):
     _assert_binance_available()
@@ -303,7 +303,7 @@ def signed(method, path, params=None):
 
 def public(path, p=None):
     _assert_binance_available()
-    time.sleep(2.5)
+    time.sleep(3.0)
     r = requests.get(BASE + path, params=p, timeout=12)
     _record_limit(r)
     r.raise_for_status()
@@ -346,7 +346,7 @@ def cron_scan_market():
             return {'status': 'PAUSED', 'message': 'التداول متوقف حالياً من مفتاح الإيقاف'}, 200
         
         opps = 0
-        for sym in SYMBOLS[:3]:
+        for sym in SYMBOLS[:2]:
             prop = proposal(sym)
             if prop:
                 opps += 1
