@@ -2,7 +2,7 @@
 Alkuwaiti Bot V57 - Grand Master Enterprise Edition (Complete & Unabridged)
 Full Binance Futures Automated Trading Engine, EMA/ATR Signals,
 Rate-Limit Protection & Auto-Cooldown, Direct Unauthenticated Cron-Job Scan,
-Direct UI API Key Management & Live Balance Fetcher,
+Direct UI API Key Management & Live Balance Fetcher (Hardened Fix),
 Yahoo & WS Live Price Feeds, TradingView Charts, Backtest Simulator,
 Bank Accounts Management, Subscription Approvals & Terms Gate.
 """
@@ -206,6 +206,7 @@ def is_bot_paused():
         row = c.fetchone()
     return bool(row[0]) if row else False
 
+# دالة جلب الرصيد المحسنة والمصححة لضمان جلب القيمة دون أخطاء
 def get_binance_balance():
     try:
         res = signed('GET', '/fapi/v2/account')
@@ -214,12 +215,20 @@ def get_binance_balance():
             usdt_item = next((a for a in assets if a.get('asset') == 'USDT'), None)
             if usdt_item:
                 return float(usdt_item.get('availableBalance', 0))
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            res_v1 = signed('GET', '/fapi/v1/account')
+            if isinstance(res_v1, dict):
+                assets = res_v1.get('assets', [])
+                usdt_item = next((a for a in assets if a.get('asset') == 'USDT'), None)
+                if usdt_item:
+                    return float(usdt_item.get('availableBalance', 0))
+        except Exception:
+            pass
     return None
 
 # ---------------------------------------------------------
-# Anti-Ban Protection & Rate Limit Management (Hardened)
+# Anti-Ban Protection & Rate Limit Management
 # ---------------------------------------------------------
 _ban_lock = threading.RLock()
 _ban_until_ms = 0
@@ -322,7 +331,7 @@ def binance_ban_status():
     return _cooldown_state(force=True)
 
 # ---------------------------------------------------------
-# DIRECT CRON SCAN ENDPOINT (No Login Required - Fixes 302)
+# DIRECT CRON SCAN ENDPOINT
 # ---------------------------------------------------------
 @app.route('/cron/scan', methods=['GET', 'POST'])
 @app.route('/api/scan', methods=['GET', 'POST'])
@@ -349,14 +358,14 @@ def cron_scan_market():
         return {
             'status': 'SUCCESS',
             'opportunities_found': opps,
-            'message': 'تم تنفيذ الفحص المباشر بنجاح بدون قيود تسجيل الدخول',
+            'message': 'تم تنفيذ الفحص المباشر بنجاح بدون قيود',
             'timestamp': datetime.now(timezone.utc).isoformat()
         }, 200
     except Exception as e:
         return {'status': 'ERROR', 'error': str(e)}, 500
 
 # ---------------------------------------------------------
-# Technical Analysis Algorithms (EMA & ATR Calculation)
+# Technical Analysis Algorithms
 # ---------------------------------------------------------
 def ema(vals, n):
     v = sum(vals[:n]) / n
@@ -387,7 +396,7 @@ def proposal(symbol):
     return direction, entry, stop, take
 
 # ---------------------------------------------------------
-# Yahoo Finance Feed Endpoint & Cache System
+# Yahoo Finance Feed Endpoint
 # ---------------------------------------------------------
 YAHOO_TICKERS = {
     'BTCUSDT': 'BTC-USD', 'ETHUSDT': 'ETH-USD', 'BNBUSDT': 'BNB-USD',
@@ -467,7 +476,7 @@ def backtest_simulator():
     """, wins=wins, losses=losses, win_rate=win_rate)
 
 # ---------------------------------------------------------
-# HTML Views & User Interface Layouts
+# HTML Views & Layouts
 # ---------------------------------------------------------
 PAGE = '''<!doctype html>
 <html lang="ar" dir="rtl">
@@ -624,7 +633,7 @@ window.onload = function(){
 </article>
 
 <article>
-<h2>✉️ إعدادات بريد الإدارة (لاستعادة كلمات المرور)</h2>
+<h2>✉️ إعدادات بريد الإدارة</h2>
 <form method="post" action="/settings/admin-email">
 <input type="hidden" name="csrf" value="{{csrf}}">
 <input type="email" name="admin_email" value="{{prefs.admin_email or ''}}" placeholder="إيميل المسؤول الجديد" style="width:70%" required>
