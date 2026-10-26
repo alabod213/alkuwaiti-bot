@@ -59,18 +59,28 @@ def get_encryption_suite():
         master = Fernet.generate_key().decode()
     return Fernet(master.encode() if isinstance(master, str) else master)
 
+# ---------------------------------------------------------
+# 🛠️ التحديث الجذري: دالة قراءة المفاتيح المرنة (قاعدة بيانات + متغيرات البيئة)
+# ---------------------------------------------------------
 def credentials():
     master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
     try:
         with db() as conn, conn.cursor() as c:
             c.execute("SELECT api_key_cipher, api_secret_cipher FROM bot_api_credentials WHERE id=1")
             row = c.fetchone()
-        if row and master:
-            f = Fernet(master.encode())
+        if row and master and row[0] and row[1]:
+            f = Fernet(master.encode() if isinstance(master, str) else master)
             return f.decrypt(bytes(row[0])).decode(), f.decrypt(bytes(row[1])).decode()
     except Exception:
         pass
-    return os.environ.get('BINANCE_API_KEY', ''), os.environ.get('BINANCE_API_SECRET', '')
+    
+    # الحل الاحتياطي الفوري: القراءة المباشرة من متغيرات البيئة في Render إذا لم توجد بالقاعدة
+    env_key = os.environ.get('BINANCE_API_KEY', '').strip()
+    env_secret = os.environ.get('BINANCE_API_SECRET', '').strip()
+    if env_key and env_secret:
+        return env_key, env_secret
+
+    return '', ''
 
 # ---------------------------------------------------------
 # WebSocket System for Real-time Price Tracking
@@ -1099,7 +1109,6 @@ def toggle_bot():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    # توجيه تلقائي مباشر للرئيسية بدون الحاجة لكلمة مرور
     return redirect(url_for('home'))
 
 @app.route('/logout')
