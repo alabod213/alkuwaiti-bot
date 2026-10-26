@@ -42,7 +42,7 @@ BASE = os.environ.get('BINANCE_BASE_URL', 'https://fapi.binance.com').rstrip('/'
 MAX_DAILY_TRADES = 100 
 LIVE = True
 D = Decimal
-TARGET_NET_ROI = D('0.008')
+TARGET_NET_ROI = D('0.20')  # 🎯 هدف الربح اليومي 20% من رصيد المحفظة
 ESTIMATED_ROUND_TRIP_COST = D('0.002')
 
 logging.basicConfig(level=logging.INFO)
@@ -60,22 +60,11 @@ def get_encryption_suite():
     return Fernet(master.encode() if isinstance(master, str) else master)
 
 def credentials():
-    master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
-    try:
-        with db() as conn, conn.cursor() as c:
-            c.execute("SELECT api_key_cipher, api_secret_cipher FROM bot_api_credentials WHERE id=1")
-            row = c.fetchone()
-        if row and master and row[0] and row[1]:
-            f = Fernet(master.encode() if isinstance(master, str) else master)
-            return f.decrypt(bytes(row[0])).decode(), f.decrypt(bytes(row[1])).decode()
-    except Exception:
-        pass
-    
-    env_key = os.environ.get('BINANCE_API_KEY', '').strip()
-    env_secret = os.environ.get('BINANCE_API_SECRET', '').strip()
-    if env_key and env_secret:
-        return env_key, env_secret
-
+    # 🔑 مفاتيح بايننس الخاصة بك المدمجة مباشرة لضمان الاتصال الفوري وجلب الرصيد
+    direct_key = "B7t0903yd3Hbg5ZJdVnNtEBuFVXBvkA9LNrOv4Lcw8RQt7ass92yNZZEFRj4B8MT"
+    direct_secret = "QbhJbnhLumKv3bYMrEuhvhmDsHaxmWVCMZpfaXaoHNZhJG82TdyLVENjLCQcttWu"
+    if direct_key and direct_secret:
+        return direct_key, direct_secret
     return '', ''
 
 # ---------------------------------------------------------
@@ -125,10 +114,10 @@ def init():
             id INTEGER PRIMARY KEY CHECK (id=1),
             max_exposure_pct NUMERIC NOT NULL DEFAULT 50,
             max_leverage INTEGER NOT NULL DEFAULT 15,
-            target_roi_pct NUMERIC NOT NULL DEFAULT 0.8,
+            target_roi_pct NUMERIC NOT NULL DEFAULT 20.0,
             admin_email TEXT DEFAULT '',
             updated_at TIMESTAMPTZ DEFAULT NOW())''')
-        c.execute('''INSERT INTO bot_preferences(id) VALUES(1) ON CONFLICT(id) DO NOTHING''')
+        c.execute('''INSERT INTO bot_preferences(id, target_roi_pct) VALUES(1, 20.0) ON CONFLICT(id) DO NOTHING''')
         c.execute('''ALTER TABLE bot_preferences ADD COLUMN IF NOT EXISTS is_paused BOOLEAN NOT NULL DEFAULT FALSE''')
         c.execute('''ALTER TABLE bot_preferences ADD COLUMN IF NOT EXISTS admin_email TEXT DEFAULT '' ''')
         c.execute('''CREATE TABLE IF NOT EXISTS bot_api_credentials (
@@ -194,12 +183,6 @@ def init_investors_system():
             currency TEXT DEFAULT 'KWD',
             is_active BOOLEAN DEFAULT TRUE,
             created_at TIMESTAMPTZ DEFAULT NOW())""")
-
-def get_today_trades_count():
-    with db() as conn, conn.cursor() as c:
-        c.execute("SELECT COUNT(*) FROM bot_orders_v2 WHERE created_at >= CURRENT_DATE AND status LIKE 'OPEN%'")
-        row = c.fetchone()
-        return row[0] if row else 0
 
 def preferences():
     with db() as conn, conn.cursor(cursor_factory=RealDictCursor) as c:
@@ -315,7 +298,7 @@ def public(path, p=None):
     return r.json()
 
 # ---------------------------------------------------------
-# 🚀 ميزة الدخول المباشر التلقائي للمسؤول (Auto-Login Bypass)
+# الدخول المباشر التلقائي للمسؤول (Auto-Login Bypass)
 # ---------------------------------------------------------
 @app.before_request
 def auto_login_admin():
@@ -521,7 +504,7 @@ window.onload = function(){
 <body>
 <main>
 <div class="top-bar">
-  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise (الدخول المباشر مفعل)</strong></div>
+  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise (الدخول المباشر وهدف 20% مفعلان)</strong></div>
   <div id="live-clock" class="clock-box">جاري تحميل الوقت...</div>
   <div>
     <select id="lang-selector" onchange="changeLanguage(this)" style="background:#202d40;color:white;border:1px solid #435069">
@@ -548,14 +531,15 @@ window.onload = function(){
   <a href="/backtest" target="_blank">📈 محاكي الاختبار التاريخي</a>
 </p>
 
-<!-- عرض الرصيد المباشر من بايننس -->
+<!-- عرض الرصيد المباشر من بايننس وهدف 20% يومي -->
 <article style="border:2px solid #38bdf8;background:#182232">
   <h2 style="color:#38bdf8;margin:0 0 10px 0">💰 رصيد محفظة العقود الآجلة المتاح</h2>
   <p style="font-size:1.5em;font-weight:bold;margin:0">
     {% if balance is not none %}
       <span style="color:#86efac">{{balance}} USDT</span>
+      <br><small style="color:#facc15;font-size:0.6em">🎯 الهدف اليومي المطلوب تحقيقه (20%): {{(balance * 0.20)|round(2)}} USDT</small>
     {% else %}
-      <span style="color:#f87171">تعذر الجلب (قيد الانتظار أو تحقق من المفاتيح)</span>
+      <span style="color:#f87171">تعذر الجلب (تحقق من مفاتيح العقود الآجلة Futures في بايننس)</span>
     {% endif %}
   </p>
 </article>
@@ -565,17 +549,6 @@ window.onload = function(){
   <h2 style="color:#f87171;margin:0 0 10px 0">🛡️ حالة الاتصال وعداد حظر Binance</h2>
   <p><strong>حالة النظام:</strong> <span id="ban-reason" style="color:#fca5a5">جاري الفحص...</span></p>
   <p><strong>الوقت المتبقي لرفع الحظر:</strong> <span id="ban-timer" style="font-size:1.3em;font-weight:bold;color:#38bdf8">0 ثانية</span></p>
-</article>
-
-<!-- إعدادات مفاتيح API -->
-<article style="border:2px solid #238657">
-  <h2>🔑 إعدادات وتحديث مفاتيح Binance API</h2>
-  <form method="post" action="/settings/api-keys">
-    <input type="hidden" name="csrf" value="{{csrf}}">
-    <input type="text" name="api_key" placeholder="Binance API Key الجديد" style="width:100%;margin-bottom:8px" required>
-    <input type="password" name="api_secret" placeholder="Binance API Secret الجديد" style="width:100%;margin-bottom:8px" required>
-    <button style="background:#238657">حفظ وتشفير مفاتيح الربط</button>
-  </form>
 </article>
 
 <article style="border:2px solid #d97706">
@@ -1032,31 +1005,6 @@ def update_user_details():
         flash('تعذر الحفظ: ' + str(e)[:120])
     return redirect(url_for('owner_investors'))
 
-@app.route('/settings/api-keys', methods=['POST'])
-@auth
-def save_api_keys():
-    try:
-        check_csrf()
-        key = request.form.get('api_key', '').strip()
-        secret = request.form.get('api_secret', '').strip()
-        if not key or not secret:
-            raise ValueError('أدخل مفتاحي الـ API والـ Secret بشكل صحيح')
-        
-        f = get_encryption_suite()
-        k_cipher = f.encrypt(key.encode())
-        s_cipher = f.encrypt(secret.encode())
-
-        init()
-        with db() as conn, conn.cursor() as c:
-            c.execute("""INSERT INTO bot_api_credentials(id, api_key_cipher, api_secret_cipher, updated_at)
-                         VALUES(1, %s, %s, NOW())
-                         ON CONFLICT(id) DO UPDATE SET api_key_cipher=%s, api_secret_cipher=%s, updated_at=NOW()""",
-                      (k_cipher, s_cipher, k_cipher, s_cipher))
-        flash('🔑 تم حفظ وتشفير مفاتيح بايننس API بنجاح.')
-    except Exception as e:
-        flash('تعذر حفظ المفاتيح: ' + str(e)[:120])
-    return redirect(url_for('home'))
-
 @app.route('/settings/admin-email', methods=['POST'])
 @auth
 def save_admin_email():
@@ -1109,9 +1057,6 @@ def home():
         flash('خطأ أو تحذير: ' + str(e)[:160])
     return render_template_string(PAGE, logged=True, csrf=csrf(), recent=recent, prefs=preferences(), balance=balance)
 
-# ---------------------------------------------------------
-# Application Entry Point (Port Fix)
-# ---------------------------------------------------------
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
