@@ -59,9 +59,6 @@ def get_encryption_suite():
         master = Fernet.generate_key().decode()
     return Fernet(master.encode() if isinstance(master, str) else master)
 
-# ---------------------------------------------------------
-# 🛠️ التحديث الجذري: دالة قراءة المفاتيح المرنة (قاعدة بيانات + متغيرات البيئة)
-# ---------------------------------------------------------
 def credentials():
     master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
     try:
@@ -74,7 +71,6 @@ def credentials():
     except Exception:
         pass
     
-    # الحل الاحتياطي الفوري: القراءة المباشرة من متغيرات البيئة في Render إذا لم توجد بالقاعدة
     env_key = os.environ.get('BINANCE_API_KEY', '').strip()
     env_secret = os.environ.get('BINANCE_API_SECRET', '').strip()
     if env_key and env_secret:
@@ -237,7 +233,7 @@ def get_binance_balance():
     return None
 
 # ---------------------------------------------------------
-# Anti-Ban Protection & Rate Limit Management (Hardened)
+# Anti-Ban Protection & Rate Limit Management
 # ---------------------------------------------------------
 _ban_lock = threading.RLock()
 _ban_until_ms = 0
@@ -328,7 +324,7 @@ def auto_login_admin():
 def auth(f):
     @wraps(f)
     def wrap(*a, **kw):
-        session['admin'] = True  # ضمان بقاء الجلسة مفعلة دائماً للمسؤول
+        session['admin'] = True
         return f(*a, **kw)
     return wrap
 
@@ -345,9 +341,6 @@ def check_csrf():
 def binance_ban_status():
     return _cooldown_state(force=True)
 
-# ---------------------------------------------------------
-# DIRECT CRON SCAN ENDPOINT
-# ---------------------------------------------------------
 @app.route('/cron/scan', methods=['GET', 'POST'])
 @app.route('/api/scan', methods=['GET', 'POST'])
 def cron_scan_market():
@@ -379,9 +372,6 @@ def cron_scan_market():
     except Exception as e:
         return {'status': 'ERROR', 'error': str(e)}, 500
 
-# ---------------------------------------------------------
-# Technical Analysis Algorithms
-# ---------------------------------------------------------
 def ema(vals, n):
     v = sum(vals[:n]) / n
     for x in vals[n:]:
@@ -410,9 +400,6 @@ def proposal(symbol):
         return None
     return direction, entry, stop, take
 
-# ---------------------------------------------------------
-# Yahoo Finance Feed Endpoint
-# ---------------------------------------------------------
 YAHOO_TICKERS = {
     'BTCUSDT': 'BTC-USD', 'ETHUSDT': 'ETH-USD', 'BNBUSDT': 'BNB-USD',
     'SOLUSDT': 'SOL-USD', 'XRPUSDT': 'XRP-USD', 'XAUUSDT': 'GC=F',
@@ -454,9 +441,6 @@ def market_prices():
             _external_cache.update(at=now, checked_at=datetime.now(timezone.utc).isoformat(), prices=result)
         return {'prices': _external_cache['prices'], 'checked_at': _external_cache['checked_at'], 'source': 'Yahoo Finance / WS', 'realtime': True}
 
-# ---------------------------------------------------------
-# Backtest Simulator
-# ---------------------------------------------------------
 @app.route('/backtest')
 def backtest_simulator():
     try:
@@ -490,9 +474,6 @@ def backtest_simulator():
         </html>
     """, wins=wins, losses=losses, win_rate=win_rate)
 
-# ---------------------------------------------------------
-# HTML Views & Layouts
-# ---------------------------------------------------------
 PAGE = '''<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -909,9 +890,6 @@ a{color:#70d9ff}
 </body>
 </html>'''
 
-# ---------------------------------------------------------
-# Application Web Routes & Controllers
-# ---------------------------------------------------------
 @app.route('/investors')
 def investors():
     user = None
@@ -1132,7 +1110,8 @@ def home():
     return render_template_string(PAGE, logged=True, csrf=csrf(), recent=recent, prefs=preferences(), balance=balance)
 
 # ---------------------------------------------------------
-# Application Entry Point
+# Application Entry Point (Port Fix)
 # ---------------------------------------------------------
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')))
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
