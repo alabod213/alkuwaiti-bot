@@ -17,7 +17,7 @@ from cryptography.fernet import Fernet, InvalidToken
 app=Flask(__name__)
 app.secret_key=os.environ.get('SECRET_KEY') or secrets.token_hex(32)  # Configure SECRET_KEY on Render; otherwise sessions reset on restart
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax', PERMANENT_SESSION_LIFETIME=3600)
-BASE=os.environ.get('BINANCE_BASE_URL','https://fapi.binance.com').rstrip('/')
+BASE=os.environ.get('BINANCE_BASE_URL','https://fapi.binance.com').strip().rstrip('/')
 # API credentials can be rotated from the admin dashboard. Encrypted at rest in Neon.
 def credentials():
     master=os.environ.get('CREDENTIALS_ENCRYPTION_KEY','')
@@ -31,7 +31,7 @@ def credentials():
     return os.environ.get('BINANCE_API_KEY',''),os.environ.get('BINANCE_API_SECRET','')
 
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
-LIVE=True  # V34 safety lock: real orders disabled until independent audit and testnet verification
+LIVE=False  # V34 safety lock: real orders disabled until independent audit and testnet verification
 # Separate safety interlock: live trading is blocked until execution is audited/tested.
 EXECUTION_AUDITED=os.environ.get('EXECUTION_AUDITED','false').lower()=='true'
 D=Decimal
@@ -136,11 +136,12 @@ def _record_limit(response):
         match=re.search(r'\b(1[6-9]\d{11}|2\d{12})\b',body) if response.status_code==418 else None
     if match:
         until=int(match.group(1))
-        reason='حظر IP من Binance (418)'
+        if response.status_code==418: until+=5*60*1000  # safety margin after Binance ban expiry
+        reason='حظر IP من Binance (418)؛ مع مهلة أمان 5 دقائق'
     else:
         try: wait=min(86400,max(60,int(float(response.headers.get('Retry-After','120')))))
         except (ValueError,TypeError): wait=120
-        if response.status_code==418: wait=max(wait,900)
+        if response.status_code==418: wait=max(wait,3600)  # unknown expiry: wait at least 1h
         until=now_ms+wait*1000
         reason='حظر Binance؛ مدة انتظار احتياطية وليست وقت رفع الحظر المؤكد' if response.status_code==418 else 'تقييد طلبات Binance (429)'
     with _ban_lock:
@@ -164,7 +165,7 @@ def _assert_binance_available():
 # V29: conservative cross-worker REST limiter. Binance limits are weighted,
 # endpoint-specific and may also include other services on Render's shared IP.
 # Minimum spacing is a conservative ceiling, not a guaranteed safe quota.
-REST_MIN_INTERVAL_SECONDS = max(5.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '5.0')))
+REST_MIN_INTERVAL_SECONDS = max(15.0, float(os.environ.get('BINANCE_MIN_REQUEST_INTERVAL', '15.0')))
 # Public Yahoo quotes remain available, but Binance signal scans require explicit opt-in.
 BINANCE_MARKET_SCANS_ENABLED = os.environ.get('BINANCE_MARKET_SCANS_ENABLED','false').lower() == 'true'
 BINANCE_SCAN_INTERVAL_SECONDS = max(90, int(os.environ.get('BINANCE_SCAN_INTERVAL_SECONDS','90')))
@@ -172,7 +173,7 @@ _scan_local = threading.local()
 
 # V33: cross-worker weighted budget. This is deliberately BELOW exchange quotas,
 # not a representation of the Binance IP-wide limit. Other Render tenants may share IP.
-BINANCE_WEIGHT_BUDGET_1M = min(100, max(10, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '50'))))
+BINANCE_WEIGHT_BUDGET_1M = min(50, max(10, int(os.environ.get('BINANCE_WEIGHT_BUDGET_1M', '40'))))
 BINANCE_DASHBOARD_ACCOUNT_REFRESH = os.environ.get('BINANCE_DASHBOARD_ACCOUNT_REFRESH', 'false').lower() == 'true'
 
 def _endpoint_weight(path, params=None):
@@ -212,7 +213,7 @@ def _reserve_binance_request(path, params=None):
         next_allowed=c.fetchone()[0]
         now=datetime.now(timezone.utc)
         delay=max(0.0,(next_allowed-now).total_seconds())
-        if delay>8: raise ValueError('تم تأجيل طلب Binance لتجنب تكدس الطلبات')
+        if delay>3: raise ValueError('تم تأجيل طلب Binance لتجنب تكدس الطلبات')
         reserved_at=max(now,next_allowed)
         c.execute('UPDATE bot_binance_rate_limit SET next_allowed=%s WHERE id=1',
                   (reserved_at+timedelta(seconds=REST_MIN_INTERVAL_SECONDS),))
@@ -231,7 +232,7 @@ def _observe_binance_weight(response):
     try: used=int(raw)
     except (ValueError,TypeError):return
     # Conservative circuit breaker, not a promise of an exchange-wide limit.
-    threshold=max(100, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','600')))
+    threshold=max(100, int(os.environ.get('BINANCE_IP_WEIGHT_SOFT_LIMIT','300')))
     if used<threshold:return
     global _ban_until_ms,_ban_reason
     until=int(time.time()*1000)+120000
