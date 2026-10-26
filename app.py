@@ -660,7 +660,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
 <article><h2>آخر مراكز Binance المحفوظة (قد تكون تغيّرت)</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز في آخر لقطة محفوظة أو لم تُحفظ بيانات بعد</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
 <article><h2>🕒 مراقبة تلقائية أثناء فتح الصفحة</h2>
-<p>آخر فحص: {{kwt(scan_state.checked_at) if scan_state and scan_state.checked_at else 'لم يبدأ التحليل بعد'}}</p>
+<p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يبدأ التحليل بعد'}}</p>
 <p>فرص جديدة في آخر فحص: {{scan_state.opportunities if scan_state else 0}}</p>
 <details><summary>أسباب استبعاد الفرص</summary><small>{{scan_state.reason if scan_state else 'لا توجد بيانات'}}</small></details>
 <div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 90 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
@@ -668,7 +668,7 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 <div id="live-exit-rows">جارٍ فحص المراكز...</div>
 <small>الربح تقديري؛ الرسوم الفعلية والتمويل والانزلاق قد تغير النتيجة. يمكنك إغلاق أي مركز يدويًا من جدول المراكز.</small>
 </article>
-<article><h2>آخر الأوامر — بتوقيت الكويت</h2><div style="overflow-x:auto"><table><tr><th>التاريخ والوقت (الكويت)</th><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td style="white-space:nowrap">{{kwt(x.created_at)}}</td><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% else %}<tr><td colspan="5">لا توجد أوامر مسجلة</td></tr>{% endfor %}</table></div></article>{% endif %}</main><script>
+<article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main><script>
 (function(){
  const el=document.getElementById('google-clock');
  if(!el)return;
@@ -743,8 +743,8 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const r=await fetch('/api/daily-pnl',{credentials:'same-origin',cache:'no-store'});
      if(!r.ok)throw Error('pnl');
      const p=await r.json();
-     document.getElementById('daily-pnl').textContent='آخر نتيجة محفوظة (ليست لحظية): أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم وتمويل '+p.fees_funding+' USDT | الصافي '+p.net+' USDT | '+p.day+' | آخر تحديث '+(p.captured_at?new Date(p.captured_at).toLocaleString('ar-KW'):'غير معروف');
-   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مؤكدة محفوظة بعد؛ استخدم زر التحديث بعد انتهاء الحظر.';}
+     document.getElementById('daily-pnl').textContent=(p.notice||'آخر نتيجة محفوظة')+' | أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم وتمويل '+p.fees_funding+' USDT | الصافي '+p.net+' USDT | يوم البيانات '+p.day+' | آخر تحديث '+(p.captured_at?new Date(p.captured_at).toLocaleString('ar-KW',{timeZone:'Asia/Kuwait'}):'غير معروف');
+   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتيجة مؤكدة محفوظة، أو تعذرت قراءتها. لا يمكن عرض أرباح اليوم بدون تحديث ناجح من Binance.';}
  }
  refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,1000);
  refresh();trigger();setInterval(refresh,10000);setInterval(trigger,90000);
@@ -1093,10 +1093,17 @@ def daily_pnl():
         if not row:return {'error':'لا توجد نتائج مؤكدة محفوظة بعد. استخدم زر تحديث الأرباح من لوحة المدير.'},503
         data=dict(row['payload'])
         from zoneinfo import ZoneInfo
-        if row['captured_at'].astimezone(ZoneInfo('Asia/Kuwait')).date()!=datetime.now(ZoneInfo('Asia/Kuwait')).date():
-            return {'error':'نتيجة الأرباح المحفوظة تخص يومًا سابقًا؛ يلزم تحديثها بعد انتهاء الحظر'},503
+        # Keep the last verified snapshot visible, even when it belongs to a
+        # previous day. Never represent it as today's PnL or as a live quote.
+        kuwait_today=datetime.now(ZoneInfo('Asia/Kuwait')).date()
+        snapshot_day=row['captured_at'].astimezone(ZoneInfo('Asia/Kuwait')).date()
         data['captured_at']=row['captured_at'].isoformat()
-        data['stale']=True  # historical snapshot, not a live Binance quote
+        data['stale']=True
+        data['is_today']=snapshot_day==kuwait_today
+        data['notice']=('هذه آخر نتيجة مؤكدة محفوظة، وليست بيانات اليوم. '
+                        'يلزم تحديث ناجح من Binance لعرض أرباح اليوم.'
+                        if snapshot_day!=kuwait_today else
+                        'هذه نتيجة محفوظة لليوم وليست تحديثًا لحظيًا.')
         return data
     except Exception:
         logging.exception('Snapshot PnL read failed')
@@ -1325,9 +1332,9 @@ OWNER_PAGE="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta nam
 {% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
 <article><h2>الحد الأدنى للاستثمار: {{settings.minimum_investment_usdt}} USDT</h2><p><small>الحد الأدنى معلومة ظاهرة في المنصة، وليس طلب تحويل أو تفويض لإدارة أموال.</small></p><p>عدد المستثمرين المسجلين: {{count}}</p></article>
 <article><h2>بيانات إيداع رين — محفوظة للإدارة فقط</h2><p><small>لا تعرض للمستثمرين ولا تُستخدم لتحصيل أموال تلقائياً. تأكد من الشبكة والعملة وقواعد رين قبل أي استخدام.</small></p><form method=post action='/owner/rain'><input type=hidden name=csrf value='{{csrf}}'><label>شبكة الإيداع <input name=network value='{{settings.rain_network or ""}}' maxlength=50 placeholder='مثال: شبكة مدعومة فعلاً في رين'></label><label>عنوان الإيداع <input name=address value='{{settings.rain_deposit_address or ""}}' maxlength=256 autocomplete=off placeholder='أدخل العنوان من حساب رين بنفسك'></label><button>حفظ إعدادات رين</button></form></article>
-<article><h2>ملخص السجلات (USDT)</h2><table><tr><th>التصنيف</th><th>الإجمالي المسجل</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>هذه سجلات إدارية غير متحقَّق منها بنظام دفع أو حسابات تداول منفصلة؛ ليست رصيداً أو دخلاً فعلياً مؤكداً. لا يتم تحويل كل 100 دولار تلقائياً.</small></article>
+<article><h2>ملخص السجلات (USDT)</h2><table><tr><th>التصنيف</th><th>الإجمالي المسجل</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>هذه سجلات إدارية غير متحقَّق منها بنظام دفع أو حسابات تداول منفصلة؛ ليست رصيداً أو دخلاً فعلياً مؤكداً. لا يتم تحويل كل 100 دولار تلقائياً.</small></article>
 <article><h2>🛡️ دعم المستثمرين</h2><p>افتح حساب المستثمر للمشاهدة أو لتعديل بياناته الإدارية. لا يتم تسجيل الدخول بكلمة مروره، ولا يسمح هذا الوضع بالتداول أو السحب.</p><p><a href='/owner/support'>فتح لوحة دعم المستثمرين</a></p></article><article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
-<article><h2>أحدث سجلات الأموال والأرباح والخسائر</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>التاريخ</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or '—'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>لا تُسجَّل عمليات مالية إلا بعد ربط مصدر موثوق للتحقق. مشاركة الأرباح 50% بند مقترح غير مُفعّل.</small></p></article></main></html>"""
+<article><h2>أحدث سجلات الأموال والأرباح والخسائر</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>التاريخ</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or '—'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>لا تُسجَّل عمليات مالية إلا بعد ربط مصدر موثوق للتحقق. مشاركة الأرباح 50% بند مقترح غير مُفعّل.</small></p></article></main></html>"""
 
 @app.route('/owner/investors')
 @auth
@@ -1588,7 +1595,7 @@ def home():
     except Exception:
         logging.exception('Could not load verified account snapshot')
         bal='تعذر قراءة آخر رصيد محفوظ'
-    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,account_snapshot_at=snapshot_at,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state,kwt=kwt)
+    return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,account_snapshot_at=snapshot_at,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state)
 
 
 @app.route('/settings/api',methods=['POST'])
