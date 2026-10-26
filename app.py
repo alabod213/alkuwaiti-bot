@@ -5,7 +5,6 @@ Rate-Limit Protection & Auto-Cooldown, Direct Unauthenticated Cron-Job Scan,
 Direct UI API Key Management & Live Balance Fetcher (Anti-Ban Hardened),
 Yahoo & WS Live Price Feeds, TradingView Charts, Backtest Simulator,
 Bank Accounts Management, Subscription Approvals & Terms Gate.
-Self-Healing, Auto-Optimization & Feature-Expansion Engine Included.
 """
 
 import os
@@ -53,12 +52,6 @@ SYMBOLS = (
     'XAUUSDT', 'XAGUSDT', 'CLUSDT', 'BZUSDT', 'ADAUSDT',
     'DOGEUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT', 'NEARUSDT'
 )
-
-def get_encryption_suite():
-    master = os.environ.get('CREDENTIALS_ENCRYPTION_KEY', '')
-    if not master:
-        master = Fernet.generate_key().decode()
-    return Fernet(master.encode() if isinstance(master, str) else master)
 
 def credentials():
     # 🔑 مفاتيح بايننس المباشرة الخاصة بك
@@ -149,7 +142,6 @@ def init():
             updated_at TIMESTAMPTZ DEFAULT NOW())""")
         c.execute("INSERT INTO bot_binance_cooldown(id, until_ms, reason) VALUES(1, 0, '') ON CONFLICT(id) DO UPDATE SET until_ms=0, reason=''")
         
-        # جدول خاص لتسجيل المزايا والتطوير الذاتي (Self-Healing & Auto-Features)
         c.execute('''CREATE TABLE IF NOT EXISTS bot_self_features (
             id BIGSERIAL PRIMARY KEY,
             feature_name TEXT NOT NULL,
@@ -204,7 +196,6 @@ def get_binance_balance():
         if not KEY or not SECRET:
             return None
         
-        # مزامنة وقت السيرفر بدقة لتجنب أخطاء Timestamp
         try:
             time_res = requests.get(BASE + '/fapi/v1/time', timeout=4)
             server_time = time_res.json().get('serverTime', int(time.time() * 1000)) if time_res.ok else int(time.time() * 1000)
@@ -323,7 +314,6 @@ def check_csrf():
 def binance_ban_status():
     return _cooldown_state(force=True)
 
-# نظام الفحص الذاتي والتداول
 @app.route('/cron/scan', methods=['GET', 'POST'])
 @app.route('/api/scan', methods=['GET', 'POST'])
 def cron_scan_market():
@@ -450,9 +440,6 @@ def backtest_simulator():
         </html>
     """, wins=wins, losses=losses, win_rate=win_rate)
 
-# ---------------------------------------------------------
-# واجهة التحكم الرئيسية والواجهات المدمجة الكاملة
-# ---------------------------------------------------------
 PAGE = '''<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
@@ -487,7 +474,7 @@ window.onload = updateClock;
 <body>
 <main>
 <div class="top-bar">
-  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise (الدخول المباشر وهدف 20% والتطوير الذاتي مفعلان)</strong></div>
+  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise (الدخول المباشر وهدف 20% مفعلان)</strong></div>
   <div id="live-clock" class="clock-box">جاري تحميل الوقت...</div>
 </div>
 
@@ -515,19 +502,16 @@ window.onload = updateClock;
   </p>
 </article>
 
-<!-- لوحة التطوير الذاتي والمزايا المضافة -->
 <article style="border:2px solid #36bb9a;background:#182232">
-  <h2 style="color:#36bb9a;margin:0 0 10px 0">✨ سجل التطوير الذاتي والمزايا المُضافة تلقائياً</h2>
+  <h2 style="color:#36bb9a;margin:0 0 10px 0">✨ سجل المزايا المُضافة والتطوير الذاتي</h2>
   <ul style="margin:0;padding-right:20px;font-size:0.95em;color:#e2e8f0">
-    <li>تفعيل ميزة الدخول المباشر للمسؤول دون كلمات مرور معقدة.</li>
-    <li>ربط هدف الأرباح اليومية بنسبة 20% من رصيد محفظة العقود الآجلة ديناميكياً.</li>
-    <li>مزامنة الوقت التلقائية مع سيرفرات بايننس لمنع أخطاء التوقيت والـ Timestamp.</li>
-    <li>تفعيل الشارتات التفاعلية المباشرة عبر TradingView وأسعار Yahoo Finance.</li>
-    <li>نظام إدارة المشتركين، رخص النظامين (1 و 2)، وإدارة الحسابات البنكية.</li>
+    <li>إزالة قيود وضع المحاكاة وتفعيل الاتصال الحي المباشر بمحفظة Binance Futures.</li>
+    <li>حساب هدف الأرباح اليومية بنسبة 20% من رصيد المحفظة المتاح لحظياً.</li>
+    <li>تفعيل الدخول المباشر للمسؤول دون كلمات مرور معقدة.</li>
+    <li>تفعيل الشارتات الحية عبر TradingView وإدارة الحسابات البنكية والمشتركين.</li>
   </ul>
 </article>
 
-<!-- عداد الحظر المباشر -->
 <article id="ban-box" style="border:2px solid #ef4444;background:#1a202c">
   <h2 style="color:#f87171;margin:0 0 10px 0">🛡️ حالة الاتصال وعداد حظر Binance</h2>
   <p><strong>حالة النظام:</strong> <span id="ban-reason" style="color:#fca5a5">جاري الفحص...</span></p>
@@ -609,7 +593,6 @@ updateBanStatus();
 </body>
 </html>'''
 
-# صفحة الحسابات البنكية للمشرف
 OWNER_BANKS_PAGE = '''<!doctype html>
 <html lang="ar" dir="rtl">
 <head><meta charset="utf-8"><title>إدارة الحسابات البنكية</title>
