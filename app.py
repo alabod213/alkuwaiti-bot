@@ -81,7 +81,7 @@ def is_bot_paused():
         c.execute('SELECT is_paused FROM bot_preferences WHERE id=1')
         row = c.fetchone()
     if row is None:
-        raise RuntimeError('ØªØ¹Ø°Ø± Ù‚Ø±Ø§Ø¡Ø© Ø­Ø§Ù„Ø© Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„Ø¨ÙˆØª')
+        raise RuntimeError('تعذر قراءة حالة إيقاف البوت')
     return bool(row[0])
 
 def allowed_leverage(symbol, requested):
@@ -136,13 +136,13 @@ def _record_limit(response):
         match=re.search(r'\b(1[6-9]\d{11}|2\d{12})\b',body) if response.status_code==418 else None
     if match:
         until=int(match.group(1))
-        reason='Ø­Ø¸Ø± IP Ù…Ù† Binance (418)'
+        reason='حظر IP من Binance (418)'
     else:
         try: wait=min(86400,max(60,int(float(response.headers.get('Retry-After','120')))))
         except (ValueError,TypeError): wait=120
         if response.status_code==418: wait=max(wait,900)
         until=now_ms+wait*1000
-        reason='Ø­Ø¸Ø± BinanceØ› Ù…Ø¯Ø© Ø§Ù†ØªØ¸Ø§Ø± Ø§Ø­ØªÙŠØ§Ø·ÙŠØ© ÙˆÙ„ÙŠØ³Øª ÙˆÙ‚Øª Ø±ÙØ¹ Ø§Ù„Ø­Ø¸Ø± Ø§Ù„Ù…Ø¤ÙƒØ¯' if response.status_code==418 else 'ØªÙ‚ÙŠÙŠØ¯ Ø·Ù„Ø¨Ø§Øª Binance (429)'
+        reason='حظر Binance؛ مدة انتظار احتياطية وليست وقت رفع الحظر المؤكد' if response.status_code==418 else 'تقييد طلبات Binance (429)'
     with _ban_lock:
         if until>_ban_until_ms:
             _ban_until_ms=until;_ban_reason=reason
@@ -159,7 +159,7 @@ def _record_limit(response):
 def _assert_binance_available():
     state=_cooldown_state()
     if state['remaining_seconds']>0:
-        raise ValueError('Binance Ù…Ø­Ø¸ÙˆØ± Ù…Ø¤Ù‚ØªÙ‹Ø§Ø› Ø§Ù„Ù…ØªØ¨Ù‚ÙŠ '+str(state['remaining_seconds'])+' Ø«Ø§Ù†ÙŠØ©. Ø£ÙˆÙ‚ÙÙ†Ø§ Ø·Ù„Ø¨Ø§Øª Binance Ø­ØªÙ‰ Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ù…Ù‡Ù„Ø©.')
+        raise ValueError('Binance محظور مؤقتًا؛ المتبقي '+str(state['remaining_seconds'])+' ثانية. أوقفنا طلبات Binance حتى انتهاء المهلة.')
 
 # V29: conservative cross-worker REST limiter. Binance limits are weighted,
 # endpoint-specific and may also include other services on Render's shared IP.
@@ -203,7 +203,7 @@ def _reserve_binance_request(path, params=None):
         c.execute("SELECT COALESCE(SUM(weight),0) FROM bot_binance_weight_events WHERE reserved_at > NOW() - INTERVAL '60 seconds'")
         used=int(c.fetchone()[0])
         if used+weight > BINANCE_WEIGHT_BUDGET_1M:
-            raise ValueError('ØªÙ… ØªØ£Ø¬ÙŠÙ„ Ø·Ù„Ø¨ Binance: Ù…ÙŠØ²Ø§Ù†ÙŠØ© ÙˆØ²Ù† Ø§Ù„Ø·Ù„Ø¨Ø§Øª Ø®Ù„Ø§Ù„ 60 Ø«Ø§Ù†ÙŠØ© Ù…Ù…ØªÙ„Ø¦Ø©')
+            raise ValueError('تم تأجيل طلب Binance: ميزانية وزن الطلبات خلال 60 ثانية ممتلئة')
         # Keep the older minimum-gap mechanism; fail closed on a backlog.
         c.execute('''CREATE TABLE IF NOT EXISTS bot_binance_rate_limit
                      (id INTEGER PRIMARY KEY CHECK(id=1), next_allowed TIMESTAMPTZ NOT NULL DEFAULT NOW())''')
@@ -212,7 +212,7 @@ def _reserve_binance_request(path, params=None):
         next_allowed=c.fetchone()[0]
         now=datetime.now(timezone.utc)
         delay=max(0.0,(next_allowed-now).total_seconds())
-        if delay>8: raise ValueError('ØªÙ… ØªØ£Ø¬ÙŠÙ„ Ø·Ù„Ø¨ Binance Ù„ØªØ¬Ù†Ø¨ ØªÙƒØ¯Ø³ Ø§Ù„Ø·Ù„Ø¨Ø§Øª')
+        if delay>8: raise ValueError('تم تأجيل طلب Binance لتجنب تكدس الطلبات')
         reserved_at=max(now,next_allowed)
         c.execute('UPDATE bot_binance_rate_limit SET next_allowed=%s WHERE id=1',
                   (reserved_at+timedelta(seconds=REST_MIN_INTERVAL_SECONDS),))
@@ -238,7 +238,7 @@ def _observe_binance_weight(response):
     with _ban_lock:
         if until>_ban_until_ms:
             _ban_until_ms=until
-            _ban_reason='Ø¥ÙŠÙ‚Ø§Ù Ø§Ø­ØªØ±Ø§Ø²ÙŠ: ÙˆØ²Ù† Ø·Ù„Ø¨Ø§Øª Ø¹Ù†ÙˆØ§Ù† IP Ù…Ø±ØªÙØ¹'
+            _ban_reason='إيقاف احترازي: وزن طلبات عنوان IP مرتفع'
     try:
         _ban_table()
         with db() as conn,conn.cursor() as c:
@@ -257,14 +257,14 @@ def signed(method,path,params=None):
         return cache[cache_key]
     _reserve_binance_request(path,params)
     KEY,SECRET=credentials()
-    if not KEY or not SECRET: raise ValueError('Ù…ÙØ§ØªÙŠØ­ Binance ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯Ø© ÙÙŠ Render')
+    if not KEY or not SECRET: raise ValueError('مفاتيح Binance غير موجودة في Render')
     p=dict(params or {});p['timestamp']=int(time.time()*1000);p['recvWindow']=5000
     q=urlencode(p);sig=hmac.new(SECRET.encode(),q.encode(),hashlib.sha256).hexdigest()
     r=requests.request(method,BASE+path,params=q+'&signature='+sig,headers={'X-MBX-APIKEY':KEY},timeout=15)
     _record_limit(r)
     _observe_binance_weight(r)
     if not r.ok:
-        if r.status_code in (418,429): raise ValueError('Binance Ø£ÙˆÙ‚Ù Ø§Ù„Ø·Ù„Ø¨Ø§Øª Ù…Ø¤Ù‚ØªÙ‹Ø§Ø› Ø±Ø§Ø¬Ø¹ Ø¹Ø¯Ø§Ø¯ Ø§Ù„Ø­Ø¸Ø± ÙÙŠ Ù„ÙˆØ­Ø© Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„')
+        if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر في لوحة المسؤول')
         raise ValueError('Binance '+str(r.status_code)+': '+r.text[:220])
     data=r.json()
     if method=='GET' and cache is not None and path in ('/fapi/v2/account','/fapi/v2/positionRisk','/fapi/v1/openOrders','/fapi/v1/leverageBracket'):
@@ -283,7 +283,7 @@ def public(path,p=None):
     r=requests.get(BASE+path,params=p,timeout=12)
     _record_limit(r)
     _observe_binance_weight(r)
-    if r.status_code in (418,429): raise ValueError('Binance Ø£ÙˆÙ‚Ù Ø§Ù„Ø·Ù„Ø¨Ø§Øª Ù…Ø¤Ù‚ØªÙ‹Ø§Ø› Ø±Ø§Ø¬Ø¹ Ø¹Ø¯Ø§Ø¯ Ø§Ù„Ø­Ø¸Ø±')
+    if r.status_code in (418,429): raise ValueError('Binance أوقف الطلبات مؤقتًا؛ راجع عداد الحظر')
     r.raise_for_status()
     data=r.json()
     with _public_cache_lock:
@@ -319,7 +319,7 @@ def csrf():
     return session['csrf']
 
 def check_csrf():
-    if not hmac.compare_digest(request.form.get('csrf',''),session.get('csrf','')): raise ValueError('Ø§Ù†ØªÙ‡Øª ØµÙ„Ø§Ø­ÙŠØ© Ø§Ù„Ù†Ù…ÙˆØ°Ø¬ØŒ Ø­Ø¯Ù‘Ø« Ø§Ù„ØµÙØ­Ø©')
+    if not hmac.compare_digest(request.form.get('csrf',''),session.get('csrf','')): raise ValueError('انتهت صلاحية النموذج، حدّث الصفحة')
 
 def ema(vals,n):
     v=sum(vals[:n])/n
@@ -347,7 +347,7 @@ def proposal(symbol):
 def symbol_info(symbol):
     data=public('/fapi/v1/exchangeInfo')
     item=next((s for s in data['symbols'] if s['symbol']==symbol and s['status']=='TRADING'),None)
-    if not item: raise ValueError('Ù‡Ø°Ø§ Ø§Ù„Ø±Ù…Ø² ØºÙŠØ± Ù…ØªØ§Ø­ Ù„Ù„ØªØ¯Ø§ÙˆÙ„ Ø­Ø§Ù„ÙŠÙ‹Ø§ Ø¹Ù„Ù‰ Binance Futures')
+    if not item: raise ValueError('هذا الرمز غير متاح للتداول حاليًا على Binance Futures')
     return item
 
 def floor_step(x,step): return (x/step).to_integral_value(rounding=ROUND_DOWN)*step
@@ -365,9 +365,9 @@ def feasibility(symbol, entry, stop, take, info=None):
     account=signed('GET','/fapi/v2/account')
     equity=D(account['totalMarginBalance'])
     free=D(account['availableBalance'])
-    if equity<=0 or free<=0: raise ValueError('Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø±ØµÙŠØ¯ Ù…ØªØ§Ø­')
+    if equity<=0 or free<=0: raise ValueError('لا يوجد رصيد متاح')
     ps=positions()
-    if any(x['symbol']==symbol for x in ps): raise ValueError('Ù…Ø±ÙƒØ² Ù…ÙØªÙˆØ­ Ø¹Ù„Ù‰ Ù†ÙØ³ Ø§Ù„Ø±Ù…Ø²')
+    if any(x['symbol']==symbol for x in ps): raise ValueError('مركز مفتوح على نفس الرمز')
     exposure=sum(abs(D(x['positionAmt']))*D(x['markPrice']) for x in ps)
     # Reserve notional for other pending opening orders, not protective/closing orders.
     for order in signed('GET','/fapi/v1/openOrders'):
@@ -377,40 +377,40 @@ def feasibility(symbol, entry, stop, take, info=None):
         px=D(order.get('price') or '0')
         if px<=0:
             try: px=D(public('/fapi/v1/premiumIndex',{'symbol':order['symbol']})['markPrice'])
-            except Exception: raise ValueError('ØªØ¹Ø°Ø± Ø§Ø­ØªØ³Ø§Ø¨ Ø§Ù„Ø£ÙˆØ§Ù…Ø± Ø§Ù„Ù…Ø¹Ù„Ù‚Ø©')
+            except Exception: raise ValueError('تعذر احتساب الأوامر المعلقة')
         exposure+=remaining*px
     prefs=preferences()
     room=equity*D(str(prefs['max_exposure_pct']))/D('100')-exposure
     filters={f['filterType']:f for f in info['filters']}
     lot=filters.get('MARKET_LOT_SIZE') or filters.get('LOT_SIZE')
-    if not lot: raise ValueError('Ø´Ø±ÙˆØ· Ø­Ø¬Ù… Ø§Ù„Ø£Ù…Ø± ØºÙŠØ± Ù…ØªØ§Ø­Ø©')
+    if not lot: raise ValueError('شروط حجم الأمر غير متاحة')
     step=D(lot['stepSize']); minimum=D(lot['minQty'])
     mark=D(public('/fapi/v1/premiumIndex',{'symbol':symbol})['markPrice'])
     min_value=D(filters.get('MIN_NOTIONAL',{}).get('notional','5'))
     # Smallest possible valid order, round up to step.
     from decimal import ROUND_UP
     qty=max((minimum/step).to_integral_value(rounding=ROUND_UP)*step,(min_value/mark/step).to_integral_value(rounding=ROUND_UP)*step)
-    if step<=0 or mark<=0 or qty<=0: raise ValueError('Ø´Ø±ÙˆØ· ÙƒÙ…ÙŠØ© Ø§Ù„ØªØ¯Ø§ÙˆÙ„ ØºÙŠØ± ØµØ§Ù„Ø­Ø©')
-    if D(lot.get('maxQty','0'))>0 and qty>D(lot['maxQty']): raise ValueError('Ø§Ù„ÙƒÙ…ÙŠØ© Ø£ÙƒØ¨Ø± Ù…Ù† Ø­Ø¯ Binance')
+    if step<=0 or mark<=0 or qty<=0: raise ValueError('شروط كمية التداول غير صالحة')
+    if D(lot.get('maxQty','0'))>0 and qty>D(lot['maxQty']): raise ValueError('الكمية أكبر من حد Binance')
     lev=allowed_leverage(symbol,prefs['max_leverage'])
-    if D(str(prefs['max_exposure_pct']))>10 or D(str(prefs['max_exposure_pct']))<=0: raise ValueError('Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ù‚ØµÙ‰ Ù„Ù„ØªØ¹Ø±Ø¶ ÙŠØ¬Ø¨ Ø£Ù† ÙŠÙƒÙˆÙ† Ø¨ÙŠÙ† 0 Ùˆ10 Ø¨Ø§Ù„Ù…Ø¦Ø©')
+    if D(str(prefs['max_exposure_pct']))>10 or D(str(prefs['max_exposure_pct']))<=0: raise ValueError('الحد الأقصى للتعرض يجب أن يكون بين 0 و10 بالمئة')
     if qty*mark>room or qty*mark/D(lev)>free*D('0.95'):
-        raise ValueError('Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ø¯Ù†Ù‰ ÙŠØªØ¬Ø§ÙˆØ² Ø³Ù‚Ù Ø§Ù„ØªØ¹Ø±Ø¶ Ø£Ùˆ Ø§Ù„Ù‡Ø§Ù…Ø´ Ø§Ù„Ù…ØªØ§Ø­')
+        raise ValueError('الحد الأدنى يتجاوز سقف التعرض أو الهامش المتاح')
     # Approximate net ROI on initial margin, not an assurance of profit.
     gross=((take-entry)/entry) if take>entry and stop<entry else ((entry-take)/entry) if take<entry and stop>entry else D('-1')
     net=(gross-ESTIMATED_ROUND_TRIP_COST)*D(lev)
     if gross<=0 or net<D(str(prefs['target_roi_pct']))/100:
-        raise ValueError('Ø§Ù„Ù‡Ø¯Ù Ø§Ù„ÙÙ†ÙŠ Ù„Ø§ ÙŠØ­Ù‚Ù‚ Ù†Ø³Ø¨Ø© Ø§Ù„Ø±Ø¨Ø­ Ø§Ù„ØµØ§ÙÙŠ Ø§Ù„Ù…Ø³ØªÙ‡Ø¯ÙØ© Ø¹Ù„Ù‰ Ø§Ù„Ù‡Ø§Ù…Ø´')
+        raise ValueError('الهدف الفني لا يحقق نسبة الربح الصافي المستهدفة على الهامش')
     return qty,mark,net
 
 def entry_order(row):
-    if is_bot_paused(): raise ValueError('Ø§Ù„Ø¨ÙˆØª Ù…ØªÙˆÙ‚Ù Ø¨Ø£Ù…Ø± Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„Ø› Ù„Ø§ ÙŠÙ…ÙƒÙ† ÙØªØ­ ØµÙÙ‚Ø© Ø¬Ø¯ÙŠØ¯Ø©')
-    if not LIVE or not EXECUTION_AUDITED: raise ValueError('ØªÙ†ÙÙŠØ° Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ù…Ù‚ÙÙ„ Ù„Ø­ÙŠÙ† Ø§Ø®ØªØ¨Ø§Ø± Ø§Ù„Ø£ÙˆØ§Ù…Ø± ÙˆÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø© ÙˆØ§Ø¹ØªÙ…Ø§Ø¯ EXECUTION_AUDITED')
+    if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول؛ لا يمكن فتح صفقة جديدة')
+    if not LIVE or not EXECUTION_AUDITED: raise ValueError('تنفيذ التداول مقفل لحين اختبار الأوامر ووقف الخسارة واعتماد EXECUTION_AUDITED')
     symbol=row['symbol']; info=symbol_info(symbol)
     account=signed('GET','/fapi/v2/account')
-    if account.get('dualSidePosition'): raise ValueError('ÙŠØ±Ø¬Ù‰ ØªØ¹Ø·ÙŠÙ„ Hedge ModeØ› Ù‡Ø°Ø§ Ø§Ù„Ø¥ØµØ¯Ø§Ø± ÙŠØ¯Ø¹Ù… One-way ÙÙ‚Ø·')
+    if account.get('dualSidePosition'): raise ValueError('يرجى تعطيل Hedge Mode؛ هذا الإصدار يدعم One-way فقط')
     if (datetime.now(timezone.utc)-row['created_at']).total_seconds()>900:
-        raise ValueError('Ø§Ù†ØªÙ‡Øª ØµÙ„Ø§Ø­ÙŠØ© Ø§Ù„Ø¥Ø´Ø§Ø±Ø© (15 Ø¯Ù‚ÙŠÙ‚Ø©). Ø£Ø¹Ø¯ Ø§Ù„ØªØ­Ù„ÙŠÙ„')
+        raise ValueError('انتهت صلاحية الإشارة (15 دقيقة). أعد التحليل')
     qty,mark,net=feasibility(symbol,D(row['entry_reference']),D(row['stop_reference']),D(row['take_reference']),info)
     take=D(row['take_reference'])
     if row['direction']=='LONG':
@@ -420,15 +420,15 @@ def entry_order(row):
     prefs=preferences()
     lev=allowed_leverage(symbol,prefs['max_leverage'])
     if live_net*D(lev)<D(str(prefs['target_roi_pct']))/100:
-        raise ValueError('Ø¨Ø¹Ø¯ ØªØºÙŠØ± Ø§Ù„Ø³Ø¹Ø± Ù„Ù… ÙŠØ¹Ø¯ Ø§Ù„Ù‡Ø¯Ù ÙŠØ­Ù‚Ù‚ ØµØ§ÙÙŠ Ø§Ù„Ø¹Ø§Ø¦Ø¯ Ø§Ù„ØªÙ‚Ø¯ÙŠØ±ÙŠ Ø§Ù„Ù…Ø­Ø¯Ø¯')
+        raise ValueError('بعد تغير السعر لم يعد الهدف يحقق صافي العائد التقديري المحدد')
     filters={f['filterType']:f for f in info['filters']}
     # Ensure protective stop is on correct side of live mark price.
     stop=D(row['stop_reference']); side='BUY' if row['direction']=='LONG' else 'SELL'
     if (side=='BUY' and stop>=mark) or (side=='SELL' and stop<=mark):
-        raise ValueError('Ø³Ø¹Ø± ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø© Ù„Ù… ÙŠØ¹Ø¯ ØµØ§Ù„Ø­Ù‹Ø§ Ø¨Ø¹Ø¯ ØªØ­Ø±Ùƒ Ø§Ù„Ø³ÙˆÙ‚Ø› Ø£Ø¹Ø¯ Ø§Ù„ØªØ­Ù„ÙŠÙ„')
+        raise ValueError('سعر وقف الخسارة لم يعد صالحًا بعد تحرك السوق؛ أعد التحليل')
     price_filter=filters['PRICE_FILTER']; tick=D(price_filter['tickSize'])
     stop=floor_step(stop,tick)
-    if stop<=0: raise ValueError('ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø© ØºÙŠØ± ØµØ§Ù„Ø­')
+    if stop<=0: raise ValueError('وقف الخسارة غير صالح')
     # Set isolated leverage conservatively. Do not change leverage on existing positions.
     signed('POST','/fapi/v1/marginType',{'symbol':symbol,'marginType':'ISOLATED'}) if False else None
     signed('POST','/fapi/v1/leverage',{'symbol':symbol,'leverage':lev})
@@ -446,15 +446,15 @@ def entry_order(row):
                 'newClientOrderId':'ak'+str(row['id'])+'e'})
         except Exception:
             logging.exception('CRITICAL: STOP PLACEMENT AND EMERGENCY FLATTEN FAILED for %s',symbol)
-            raise ValueError('Ø®Ø·Ø±: ÙØ´Ù„ ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø© ÙˆØ§Ù„Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø·Ø§Ø±Ø¦! Ø§ÙØªØ­ Binance ÙÙˆØ±Ù‹Ø§ ÙˆØªØ­Ù‚Ù‚ Ù…Ù† Ø§Ù„Ù…Ø±ÙƒØ²')
-        raise ValueError('ÙØ´Ù„ Ø¥Ù†Ø´Ø§Ø¡ ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø©Ø› Ø£Ø±Ø³Ù„Ù†Ø§ Ø£Ù…Ø± Ø¥ØºÙ„Ø§Ù‚ Ø·Ø§Ø±Ø¦. ØªØ­Ù‚Ù‚ Ù…Ù† Binance: '+str(stop_error)[:90])
+            raise ValueError('خطر: فشل وقف الخسارة والإغلاق الطارئ! افتح Binance فورًا وتحقق من المركز')
+        raise ValueError('فشل إنشاء وقف الخسارة؛ أرسلنا أمر إغلاق طارئ. تحقق من Binance: '+str(stop_error)[:90])
     return order,protect,qty
 
 
 def auto_scan():
     """Generate proposals only; never place orders. Globally max once per 90 seconds."""
     if not BINANCE_MARKET_SCANS_ENABLED:
-        return {'status':'binance_scans_disabled','created':0,'message':'Ø£Ø³Ø¹Ø§Ø± Yahoo Ù…Ø³ØªÙ…Ø±Ø©Ø› ØªØ­Ù„ÙŠÙ„ Ø´Ù…ÙˆØ¹ Binance Ù…ØªÙˆÙ‚Ù Ø§Ø­ØªØ±Ø§Ø²ÙŠÙ‹Ø§ Ø­ØªÙ‰ ØªÙØ¹ÙŠÙ„Ù‡ ÙŠØ¯ÙˆÙŠÙ‹Ø§'}
+        return {'status':'binance_scans_disabled','created':0,'message':'أسعار Yahoo مستمرة؛ تحليل شموع Binance متوقف احترازيًا حتى تفعيله يدويًا'}
     if _cooldown_state()['remaining_seconds']>0:
         return {'status':'binance_banned','created':0}
     if is_bot_paused(): return {'status':'paused','created':0}
@@ -495,13 +495,13 @@ def _auto_scan_body():
                     info=symbol_info(sym)
                     signal=proposal(sym)
                     if not signal:
-                        rejected[sym]='Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¥Ø´Ø§Ø±Ø©'
+                        rejected[sym]='لا توجد إشارة'
                         continue
                     direction,entry,stop,take=signal
                     feasibility(sym,entry,stop,take,info)
                     c.execute("SELECT 1 FROM bot_orders_v2 WHERE symbol=%s AND status IN ('PENDING','SUBMITTING','OPEN','CLOSING','REQUIRES_REVIEW') LIMIT 1",(sym,))
                     if c.fetchone():
-                        rejected[sym]='ÙØ±ØµØ© Ø£Ùˆ Ù…Ø±ÙƒØ² Ø³Ø§Ø¨Ù‚ Ù‚ÙŠØ¯ Ø§Ù„Ù…ØªØ§Ø¨Ø¹Ø©'
+                        rejected[sym]='فرصة أو مركز سابق قيد المتابعة'
                         continue
                     c.execute("INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference) VALUES(%s,%s,%s,%s,%s)",(sym,direction,entry,stop,take))
                     created+=1
@@ -563,7 +563,7 @@ def reject_close_suggestion(symbol):
         check_csrf()
         with db() as conn,conn.cursor() as c:
             c.execute("UPDATE bot_close_suggestions SET status='REJECTED' WHERE symbol=%s AND status='PENDING'",(symbol,))
-        flash('ØªÙ… Ø±ÙØ¶ Ø§Ù‚ØªØ±Ø§Ø­ Ø¬Ù†ÙŠ Ø§Ù„Ø±Ø¨Ø­ØŒ ÙˆØ§Ù„Ù…Ø±ÙƒØ² Ù„Ø§ ÙŠØ²Ø§Ù„ Ù…ÙØªÙˆØ­Ù‹Ø§.')
+        flash('تم رفض اقتراح جني الربح، والمركز لا يزال مفتوحًا.')
     except Exception as e:
         flash(str(e)[:160])
     return redirect(url_for('home'))
@@ -576,13 +576,13 @@ def approve_close_suggestion(symbol):
         check_csrf()
         with db() as conn,conn.cursor() as c:
             c.execute("SELECT 1 FROM bot_close_suggestions WHERE symbol=%s AND status='PENDING' AND created_at>NOW()-INTERVAL '10 minutes'",(symbol,))
-            if not c.fetchone(): raise ValueError('Ø§Ù‚ØªØ±Ø§Ø­ Ø§Ù„Ø¥ØºÙ„Ø§Ù‚ Ø§Ù†ØªÙ‡Øª ØµÙ„Ø§Ø­ÙŠØªÙ‡')
+            if not c.fetchone(): raise ValueError('اقتراح الإغلاق انتهت صلاحيته')
         return close_position(symbol)
     except Exception as e:
         flash(str(e)[:160])
         return redirect(url_for('home'))
 
-PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ</title><style>
+PAGE='''<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>البوت الكويتي</title><style>
 body{background:#101827;color:#f5f7fb;font:16px system-ui;margin:0}main{max-width:850px;margin:auto;padding:16px}article{background:#202d40;padding:16px;border-radius:14px;margin:14px 0;overflow:auto}button,input{font:inherit;padding:10px;border:0;border-radius:8px;margin:4px}button{background:#238657;color:white}button.danger{background:#b64040}a{color:#9fc8ff}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #435069;text-align:right}small{color:#bdc9da}.warn{color:#ffcf83}
 
 /* Automatic daytime/nighttime palette */
@@ -600,79 +600,79 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 .theme-switch{display:inline-block;margin:8px 0;padding:9px 12px;background:#315174;color:white;border:0;border-radius:9px;cursor:pointer}
 </style><script>(function(){
   function hour(){return Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kuwait',hour:'2-digit',hourCycle:'h23'}).format(new Date()))}
-  function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='ðŸŽ¨ Ø§Ù„Ù…Ø¸Ù‡Ø±: '+(theme==='light'?'Ù†Ù‡Ø§Ø±ÙŠ':'Ù„ÙŠÙ„ÙŠ')+' (Ø§Ø¶ØºØ· Ù„Ù„ØªØºÙŠÙŠØ±)'}
+  function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
   window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">ðŸŽ¨ Ø§Ù„Ù…Ø¸Ù‡Ø±</button><h1>ðŸ‡°ðŸ‡¼ Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ V38</h1><p class="warn">{{'âš ï¸ Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ Ù…ÙØ¹Ù„' if live else 'ðŸ”’ Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ Ù…Ø¹Ø·Ù„ â€” ÙˆØ¶Ø¹ Ø§Ù„ØªØ­Ù„ÙŠÙ„ ÙÙ‚Ø·'}}</p>
+})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><h1>🇰🇼 البوت الكويتي V38</h1><p class="warn">{{'⚠️ التداول الحقيقي مفعل' if live else '🔒 التداول الحقيقي معطل — وضع التحليل فقط'}}</p>
 {% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}
-{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>â³ Ø­Ø§Ù„Ø© Ø§ØªØµØ§Ù„ Binance / Ø­Ø¸Ø± IP</h2><p id="binance-ban-message">Ø¬Ø§Ø±ÙŠ Ø§Ù„ØªØ­Ù‚Ù‚ Ù…Ù† Ø­Ø§Ù„Ø© Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">â€”</p><small>Ø§Ù„Ø¹Ø¯Ø§Ø¯ ÙŠØ³ØªÙ†Ø¯ Ø¥Ù„Ù‰ ØªØ§Ø±ÙŠØ® Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ø­Ø¸Ø± Ø§Ù„Ø°ÙŠ ØªØ±Ø³Ù„Ù‡ Binance Ø¹Ù†Ø¯ ØªÙˆÙØ±Ù‡. Ù„Ø§ ÙŠØ¹Ù†ÙŠ Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ø¹Ø¯Ø§Ø¯ Ø£Ù† Ø§Ù„Ø§ØªØµØ§Ù„ Ø¹Ø§Ø¯ Ù…Ø¤ÙƒØ¯Ù‹Ø§. ÙŠØªÙˆÙ‚Ù Ø¥Ø±Ø³Ø§Ù„ Ø·Ù„Ø¨Ø§Øª Binance Ø£Ø«Ù†Ø§Ø¡ Ø§Ù„Ø­Ø¸Ø±.</small></article>{% endif %}
-{% if not logged %}<article><h2>Ø¯Ø®ÙˆÙ„ Ø§Ù„Ù…Ø¯ÙŠØ±</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="Ø§Ù„Ø¨Ø±ÙŠØ¯" required><input type="password" name="password" placeholder="ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±" required><button>Ø¯Ø®ÙˆÙ„</button></form></article>
-{% else %}<p><a href="{{url_for('logout')}}" class="logout-link">ðŸšª ØªØ³Ø¬ÙŠÙ„ Ø®Ø±ÙˆØ¬ Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„</a> | <a href="/investors">ÙˆØ§Ø¬Ù‡Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a></p>
+{% if logged %}<article id="binance-ban-panel" style="border:2px solid #d97706" aria-live="polite"><h2>⏳ حالة اتصال Binance / حظر IP</h2><p id="binance-ban-message">جاري التحقق من حالة Binance...</p><p id="binance-ban-timer" style="font-size:1.6em;font-weight:bold">—</p><small>العداد يستند إلى تاريخ انتهاء الحظر الذي ترسله Binance عند توفره. لا يعني انتهاء العداد أن الاتصال عاد مؤكدًا. يتوقف إرسال طلبات Binance أثناء الحظر.</small></article>{% endif %}
+{% if not logged %}<article><h2>دخول المدير</h2><form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form></article>
+{% else %}<p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a> | <a href="/investors">واجهة المستثمرين</a></p>
 <article style="border:2px solid #d97706">
-<h2>ðŸ›‘ Ù…ÙØªØ§Ø­ Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„Ø¨ÙˆØª</h2>
+<h2>🛑 مفتاح إيقاف البوت</h2>
 {% if prefs and prefs.is_paused %}
-<p style="color:#fca5a5;font-weight:bold">ðŸ”´ Ø§Ù„Ø¨ÙˆØª Ù…ØªÙˆÙ‚Ù: Ù„Ø§ ÙØ­Øµ ØªÙ„Ù‚Ø§Ø¦ÙŠ ÙˆÙ„Ø§ ÙØ±Øµ Ø£Ùˆ ØµÙÙ‚Ø§Øª Ø¯Ø®ÙˆÙ„ Ø¬Ø¯ÙŠØ¯Ø©.</p>
+<p style="color:#fca5a5;font-weight:bold">🔴 البوت متوقف: لا فحص تلقائي ولا فرص أو صفقات دخول جديدة.</p>
 {% else %}
-<p style="color:#86efac;font-weight:bold">ðŸŸ¢ Ø§Ù„Ø¨ÙˆØª ÙŠØ¹Ù…Ù„: ÙŠÙ…ÙƒÙ†Ùƒ Ø¥ÙŠÙ‚Ø§ÙÙ‡ ÙÙŠ Ø£ÙŠ ÙˆÙ‚Øª.</p>
+<p style="color:#86efac;font-weight:bold">🟢 البوت يعمل: يمكنك إيقافه في أي وقت.</p>
 {% endif %}
 <form method="post" action="{{url_for('toggle_bot')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
 {% if prefs and prefs.is_paused %}
-<input type="hidden" name="action" value="resume"><button type="submit" style="background:#15803d" onclick="return confirm('Ù‡Ù„ ØªØ±ÙŠØ¯ Ø§Ø³ØªØ¦Ù†Ø§Ù Ø§Ù„ÙØ­ØµØŸ Ù„Ù† ÙŠØªÙ… ØªÙØ¹ÙŠÙ„ Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹.')">â–¶ï¸ Ø¥Ø¹Ø§Ø¯Ø© ØªØ´ØºÙŠÙ„ Ø§Ù„ÙØ­Øµ</button>
+<input type="hidden" name="action" value="resume"><button type="submit" style="background:#15803d" onclick="return confirm('هل تريد استئناف الفحص؟ لن يتم تفعيل التداول الحقيقي تلقائياً.')">▶️ إعادة تشغيل الفحص</button>
 {% else %}
-<input type="hidden" name="action" value="stop"><button type="submit" class="danger" onclick="return confirm('Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„ÙØ­Øµ ÙˆØ§Ù„Ø¯Ø®ÙˆÙ„ ÙÙŠ ØµÙÙ‚Ø§Øª Ø¬Ø¯ÙŠØ¯Ø©ØŸ Ø§Ù„Ù…Ø±Ø§ÙƒØ² Ø§Ù„Ø­Ø§Ù„ÙŠØ© Ù„Ù† ØªÙØºÙ„Ù‚ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹.')">ðŸ›‘ Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„Ø¨ÙˆØª Ø¨Ø§Ù„ÙƒØ§Ù…Ù„</button>
+<input type="hidden" name="action" value="stop"><button type="submit" class="danger" onclick="return confirm('إيقاف الفحص والدخول في صفقات جديدة؟ المراكز الحالية لن تُغلق تلقائياً.')">🛑 إيقاف البوت بالكامل</button>
 {% endif %}
 </form>
-<small>Ø§Ù„Ø¥ÙŠÙ‚Ø§Ù Ù…Ø­ÙÙˆØ¸ ÙÙŠ Neon ÙˆÙŠØ³ØªÙ…Ø± Ø¨Ø¹Ø¯ Ø¥Ø¹Ø§Ø¯Ø© ØªØ´ØºÙŠÙ„ Render. Ø§Ù„Ù…Ø±Ø§ÙƒØ² ÙˆØ§Ù„Ø£ÙˆØ§Ù…Ø± Ø§Ù„Ù…ÙØªÙˆØ­Ø© ÙÙŠ Binance Ù„Ø§ ØªÙØºÙ„Ù‚ ØªÙ„Ù‚Ø§Ø¦ÙŠÙ‹Ø§. ØªØ¸Ù„ Ù„ÙˆØ­Ø© Ø§Ù„Ø¥Ø¯Ø§Ø±Ø© Ù…ØªØ§Ø­Ø©.</small>
+<small>الإيقاف محفوظ في Neon ويستمر بعد إعادة تشغيل Render. المراكز والأوامر المفتوحة في Binance لا تُغلق تلقائيًا. تظل لوحة الإدارة متاحة.</small>
 </article>
 
-<article><h2>ðŸ›¡ï¸ Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ</h2><p><small>Ø±ÙˆØ§Ø¨Ø· Ø§Ù„Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ø®Ø§ØµØ© Ø¨Ùƒ â€” Ù„Ø§ ØªØ¸Ù‡Ø± Ù„Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†.</small></p>
+<article><h2>🛡️ إدارة البوت الكويتي</h2><p><small>روابط الإدارة الخاصة بك — لا تظهر للمستثمرين.</small></p>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
-<a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">ðŸ‘¥ Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ† ÙˆØ§Ù„Ø§Ø´ØªØ±Ø§ÙƒØ§Øª</a>
-<a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">âœ… Ø§Ù„Ø·Ù„Ø¨Ø§Øª ÙˆØ§Ù„Ù…ÙˆØ§ÙÙ‚Ø§Øª</a>
-<a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">ðŸ’° Ù…Ø³ØªØ­Ù‚Ø§ØªÙŠ ÙˆØ·Ø±Ù‚ Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù…</a>
-</div></article><article><h2>ðŸ’° Ø±ØµÙŠØ¯ Binance Ø§Ù„Ù…Ø¤ÙƒØ¯</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">Ø¢Ø®Ø± ØªØ­Ø¯ÙŠØ« Ù…Ø¤ÙƒØ¯: {{account_snapshot_at or 'Ù„Ù… ÙŠØªÙ… Ø§Ù„ØªØ­Ø¯ÙŠØ« Ø¨Ø¹Ø¯'}} â€” Ù„Ø§ Ù†Ø¹Ø±Ø¶ Ø¨ÙŠØ§Ù†Ø§Øª ØºÙŠØ± Ù…Ø¤ÙƒØ¯Ø© ÙƒØ±ØµÙŠØ¯ Ù„Ø­Ø¸ÙŠ.</small><p><small id="v37-account-status">Ø¬Ø§Ø±Ù ÙØ­Øµ Ø§Ù„Ø§ØªØµØ§Ù„ Ø§Ù„Ø¢Ù…Ù†...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø±ØµÙŠØ¯ ÙˆØ§Ù„Ù…Ø±Ø§ÙƒØ² ÙŠØ¯ÙˆÙŠÙ‹Ø§ (ÙƒÙ„ 10 Ø¯Ù‚Ø§Ø¦Ù‚)</button></form><small>Ù„Ø§ ØªØ¶ØºØ· Ø£Ø«Ù†Ø§Ø¡ Ø­Ø¸Ø± Binance. ÙØªØ­ Ø§Ù„ØµÙØ­Ø© Ù„Ø§ ÙŠØ±Ø³Ù„ Ø·Ù„Ø¨Ø§Øª Binance.</small></article>
-<article><h2>ðŸ”‘ ØªØºÙŠÙŠØ± Ù…ÙØ§ØªÙŠØ­ Binance API</h2><p><small>ÙŠÙ…ÙƒÙ†Ùƒ Ø§Ø³ØªØ¨Ø¯Ø§Ù„ Ø§Ù„Ù…ÙØ§ØªÙŠØ­ Ù…ØªÙ‰ Ø´Ø¦Øª. Ù„Ø§ ØªÙØ¹Ø±Ø¶ Ø§Ù„Ù…ÙØ§ØªÙŠØ­ Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø©ØŒ ÙˆØªÙØ­ÙØ¸ Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø© Ù…Ø´ÙØ±Ø© ÙÙŠ Neon. ÙŠÙ„Ø²Ù… CREDENTIALS_ENCRYPTION_KEY ÙÙŠ Render.</small></p><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key Ø§Ù„Ø¬Ø¯ÙŠØ¯" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret Ø§Ù„Ø¬Ø¯ÙŠØ¯" required style="width:90%"><button>ÙØ­Øµ Ø§Ù„Ø§ØªØµØ§Ù„ ÙˆØ­ÙØ¸ Ø§Ù„Ù…ÙØ§ØªÙŠØ­ Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©</button></form><small>Ø£Ù†Ø´Ø¦ Ø§Ù„Ù…ÙØ§ØªÙŠØ­ Ø¨ØµÙ„Ø§Ø­ÙŠØ© Futures ÙÙ‚Ø·ØŒ ÙˆØ¹Ø·Ù‘Ù„ Ø§Ù„Ø³Ø­Ø¨ Withdrawal. ØªØºÙŠÙŠØ± Ø§Ù„Ù…ÙØ§ØªÙŠØ­ Ù„Ø§ ÙŠÙ„ØºÙŠ Ø§Ù„ØµÙÙ‚Ø§Øª Ø§Ù„Ù…ÙØªÙˆØ­Ø©.</small></article>
-<article><h2>âš™ï¸ Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø±Ø£Ø³ Ø§Ù„Ù…Ø§Ù„ ÙˆØ§Ù„Ø±Ø§ÙØ¹Ø©</h2>
-<p><small>Ø§Ù„Ù‚ÙŠÙ… Ø§Ù„ØªØ§Ù„ÙŠØ© Ø­Ø¯ÙˆØ¯ Ù‚ØµÙˆÙ‰ ÙˆÙ„ÙŠØ³Øª ØªØ¹Ù„ÙŠÙ…Ø§Øª Ù„Ø§Ø³ØªØ«Ù…Ø§Ø± Ø§Ù„Ø±ØµÙŠØ¯ ÙƒØ§Ù…Ù„Ù‹Ø§. Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø¥Ø¶Ø§ÙØ© USDT Ø­Ù‚ÙŠÙ‚ÙŠ Ù…Ù† Ù„ÙˆØ­Ø© Ø§Ù„Ø¨ÙˆØªØ› Ø§Ù„Ø¥ÙŠØ¯Ø§Ø¹ ÙˆØ§Ù„ØªØ­ÙˆÙŠÙ„ ÙŠØªÙ…Ø§Ù† Ù…Ù† Binance ÙÙ‚Ø·.</small></p>
+<a href="{{url_for('owner_investors')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">👥 إدارة المستثمرين والاشتراكات</a>
+<a href="{{url_for('owner_requests_page')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">✅ الطلبات والموافقات</a>
+<a href="{{url_for('owner_payouts')}}" style="display:block;background:#315174;color:white;text-align:center;padding:14px;border-radius:10px;text-decoration:none;font-weight:bold">💰 مستحقاتي وطرق الاستلام</a>
+</div></article><article><h2>💰 رصيد Binance المؤكد</h2><p id="v37-balance">{{balance}}</p><small id="v37-account-time">آخر تحديث مؤكد: {{account_snapshot_at or 'لم يتم التحديث بعد'}} — لا نعرض بيانات غير مؤكدة كرصيد لحظي.</small><p><small id="v37-account-status">جارٍ فحص الاتصال الآمن...</small></p><form method="post" action="/api/v34-snapshot-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث الرصيد والمراكز يدويًا (كل 10 دقائق)</button></form><small>لا تضغط أثناء حظر Binance. فتح الصفحة لا يرسل طلبات Binance.</small></article>
+<article><h2>🔑 تغيير مفاتيح Binance API</h2><p><small>يمكنك استبدال المفاتيح متى شئت. لا تُعرض المفاتيح القديمة، وتُحفظ الجديدة مشفرة في Neon. يلزم CREDENTIALS_ENCRYPTION_KEY في Render.</small></p><form method="post" action="{{url_for('update_api_credentials')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input name="api_key" type="password" autocomplete="off" placeholder="API Key الجديد" required style="width:90%"><input name="api_secret" type="password" autocomplete="off" placeholder="API Secret الجديد" required style="width:90%"><button>فحص الاتصال وحفظ المفاتيح الجديدة</button></form><small>أنشئ المفاتيح بصلاحية Futures فقط، وعطّل السحب Withdrawal. تغيير المفاتيح لا يلغي الصفقات المفتوحة.</small></article>
+<article><h2>⚙️ إعدادات رأس المال والرافعة</h2>
+<p><small>القيم التالية حدود قصوى وليست تعليمات لاستثمار الرصيد كاملًا. لا يمكن إضافة USDT حقيقي من لوحة البوت؛ الإيداع والتحويل يتمان من Binance فقط.</small></p>
 <form method="post" action="{{url_for('save_preferences')}}">
 <input type="hidden" name="csrf" value="{{csrf}}">
-<label>Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ù‚ØµÙ‰ Ù„Ù„ØªØ¹Ø±Ø¶ Ø§Ù„Ø§Ø³Ù…ÙŠ Ù…Ù† Ø§Ù„Ù…Ø­ÙØ¸Ø© (%)</label><input type="number" name="max_exposure_pct" min="1" max="100" step="1" value="{{prefs.max_exposure_pct}}" required>
-<label>Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ø¹Ù„Ù‰ Ù„Ù„Ø±Ø§ÙØ¹Ø© (1 Ø¥Ù„Ù‰ 150ØŒ Ø­Ø³Ø¨ Ø­Ø¯ÙˆØ¯ Binance)</label><input type="number" name="max_leverage" min="1" max="150" step="1" value="{{prefs.max_leverage}}" required>
-<label>Ù‡Ø¯Ù ØµØ§ÙÙŠ Ø§Ù„Ø¹Ø§Ø¦Ø¯ Ø¹Ù„Ù‰ Ù‡Ø§Ù…Ø´ Ø§Ù„ØµÙÙ‚Ø© (%)</label><input type="number" name="target_roi_pct" min="1" max="100" step="0.5" value="{{prefs.target_roi_pct}}" required>
-<button>Ø­ÙØ¸ Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„ØªØ­Ù„ÙŠÙ„</button></form>
-<p class="warn">ØªØ­Ø°ÙŠØ±: Ø§Ù„Ø±Ø§ÙØ¹Ø© 150x Ù‚Ø¯ ØªØ¤Ø¯ÙŠ Ø¥Ù„Ù‰ ØªØµÙÙŠØ© Ø³Ø±ÙŠØ¹Ø© ÙˆØ®Ø³Ø§Ø±Ø© Ø§Ù„Ù‡Ø§Ù…Ø´. Ø§Ù„Ø¨ÙˆØª Ù„Ø§ ÙŠØ³ØªØ·ÙŠØ¹ Ø²ÙŠØ§Ø¯Ø© Ø±ØµÙŠØ¯ Binance Ø£Ùˆ Ø¶Ù…Ø§Ù† 10% Ø±Ø¨Ø­.</p>
+<label>الحد الأقصى للتعرض الاسمي من المحفظة (%)</label><input type="number" name="max_exposure_pct" min="1" max="100" step="1" value="{{prefs.max_exposure_pct}}" required>
+<label>الحد الأعلى للرافعة (1 إلى 150، حسب حدود Binance)</label><input type="number" name="max_leverage" min="1" max="150" step="1" value="{{prefs.max_leverage}}" required>
+<label>هدف صافي العائد على هامش الصفقة (%)</label><input type="number" name="target_roi_pct" min="1" max="100" step="0.5" value="{{prefs.target_roi_pct}}" required>
+<button>حفظ إعدادات التحليل</button></form>
+<p class="warn">تحذير: الرافعة 150x قد تؤدي إلى تصفية سريعة وخسارة الهامش. البوت لا يستطيع زيادة رصيد Binance أو ضمان 10% ربح.</p>
 </article>
-<article style="border:2px solid #1d9b83"><h2>âš¡ Ø£Ø³Ø¹Ø§Ø± Binance Futures Ø§Ù„Ù…Ø¨Ø§Ø´Ø±Ø© â€” WebSocket</h2>
-<p id="v36-ws-status" aria-live="polite">Ø¬Ø§Ø±ÙŠ Ø§Ù„Ø§ØªØµØ§Ù„ Ø¨Ø§Ù„Ø¨Ø« Ø§Ù„Ù…Ø¨Ø§Ø´Ø±...</p>
-<small>Ø£Ø³Ø¹Ø§Ø± Mark Price Ù„Ø¹Ù‚ÙˆØ¯ USDT-M Ø§Ù„Ù…ØªØ§Ø­Ø©Ø› Ù„ÙŠØ³Øª Ø³Ø¹Ø± ØªÙ†ÙÙŠØ° Ù…Ø¶Ù…ÙˆÙ†Ù‹Ø§. ÙŠØªÙ… ØªØ­Ø¯ÙŠØ«Ù‡Ø§ Ù…Ù† Binance WebSocket Ø¯ÙˆÙ† Ø·Ù„Ø¨ REST ÙƒÙ„ Ø«Ø§Ù†ÙŠØ©. Ø¹Ù†Ø¯ Ø§Ù†Ù‚Ø·Ø§Ø¹ Ø§Ù„Ø¨Ø« ØªØ¸Ù‡Ø± Ø­Ø§Ù„Ø© Ø§Ù„Ø§Ù†Ù‚Ø·Ø§Ø¹ ÙˆÙ„Ø§ ØªÙØ¹Ø±Ø¶ Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø© Ø¹Ù„Ù‰ Ø£Ù†Ù‡Ø§ Ù…Ø¨Ø§Ø´Ø±Ø©.</small>
-<table><thead><tr><th>Ø§Ù„Ø±Ù…Ø²</th><th>Mark Price (USDT)</th><th>ÙˆÙ‚Øª Ø§Ù„ØªØ­Ø¯ÙŠØ«</th></tr></thead><tbody id="v36-live-market"><tr><td colspan="3">Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ø¨Ø«...</td></tr></tbody></table></article>
-<article><h2>ðŸ’¹ Ø§Ù„Ù…Ø±Ø§ÙƒØ²: Ø±Ø¨Ø­ ÙˆØ®Ø³Ø§Ø±Ø© Ù…ØªØºÙŠØ±Ø© ØªÙ‚Ø¯ÙŠØ±ÙŠÙ‹Ø§</h2>
-<p id="v36-position-status">Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ø¨Ø« Ø§Ù„Ù…Ø¨Ø§Ø´Ø±...</p>
-<table><thead><tr><th>Ø§Ù„Ø±Ù…Ø²</th><th>Ø§Ù„ÙƒÙ…ÙŠØ© Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø©</th><th>Ø³Ø¹Ø± Ø§Ù„Ø¯Ø®ÙˆÙ„ Ø§Ù„Ù…Ø­ÙÙˆØ¸</th><th>Mark Price</th><th>Ø±Ø¨Ø­/Ø®Ø³Ø§Ø±Ø© ØªÙ‚Ø¯ÙŠØ±ÙŠ</th></tr></thead><tbody id="v36-live-positions"></tbody></table>
-<p id="v36-equity">Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© Ø§Ù„Ù…Ø¤ÙƒØ¯ ÙŠØ¨Ù‚Ù‰ Ø¢Ø®Ø± Ù„Ù‚Ø·Ø© Ù…Ø­ÙÙˆØ¸Ø©Ø› Ø§Ù„Ù‚ÙŠÙ…Ø© Ø§Ù„Ø¥Ø¬Ù…Ø§Ù„ÙŠØ© Ø§Ù„Ù…ØªØºÙŠØ±Ø© Ù‡Ù†Ø§ ØªÙ‚Ø¯ÙŠØ±ÙŠØ© ÙˆÙ„ÙŠØ³Øª Ø±ØµÙŠØ¯ Binance Ø§Ù„Ù…Ø¤ÙƒØ¯.</p>
-<small>Ø­Ø¬Ù… Ø§Ù„Ù…Ø±ÙƒØ² ÙˆØ³Ø¹Ø± Ø¯Ø®ÙˆÙ„Ù‡ Ù…Ø£Ø®ÙˆØ°Ø§Ù† Ù…Ù† Ø¢Ø®Ø± Ù„Ù‚Ø·Ø© Ù…Ø­ÙÙˆØ¸Ø©ØŒ ÙˆÙ‚Ø¯ ÙŠØªØºÙŠØ±Ø§Ù† ÙÙŠ Binance Ø¯ÙˆÙ† Ø¹Ù„Ù… Ø§Ù„Ø´Ø§Ø´Ø©. Ø§Ù„ØªÙ‚Ø¯ÙŠØ± Ù„Ø§ ÙŠØ´Ù…Ù„ Ø§Ù„Ø±Ø³ÙˆÙ… Ø£Ùˆ Ø§Ù„ØªÙ…ÙˆÙŠÙ„ØŒ ÙˆÙ„Ø§ ÙŠÙØ³ØªØ®Ø¯Ù… Ù„ØªÙ†ÙÙŠØ° Ø§Ù„Ø£ÙˆØ§Ù…Ø±. Ù„ØªØ­Ø¯ÙŠØ« Ø§Ù„Ù…Ø±Ø§ÙƒØ² Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠØ© Ø§Ø³ØªØ®Ø¯Ù… Ø²Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­Ø¯ÙˆØ¯ Ø£Ø¹Ù„Ø§Ù‡.</small></article>
-<article><h2>ðŸ“ˆ Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø¯Ø§Ø®Ù„ Ø§Ù„Ø¨ÙˆØª</h2><p><small>Ø¨ÙŠØ§Ù†Ø§Øª Yahoo Finance Ø§Ù„Ø¹Ø§Ù…Ø© ØºÙŠØ± Ø§Ù„Ø±Ø³Ù…ÙŠØ©ØŒ Ù‚Ø¯ ØªÙƒÙˆÙ† Ù…ØªØ£Ø®Ø±Ø© Ø£Ùˆ ØºÙŠØ± Ù…ØªØ§Ø­Ø©Ø› ØªØ®ØªÙ„Ù Ø¹Ù† Ø¹Ù‚ÙˆØ¯ Binance. ÙŠØªÙ… ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø´Ø§Ø´Ø© ÙƒÙ„ Ø«Ø§Ù†ÙŠØ©ØŒ ÙˆØ¬Ù„Ø¨ Ø§Ù„Ù…ØµØ¯Ø± ÙƒÙ„ 30 Ø«Ø§Ù†ÙŠØ© ØªÙ‚Ø±ÙŠØ¨Ù‹Ø§.</small></p>
-<table><thead><tr><th>Ø§Ù„Ø³ÙˆÙ‚</th><th>Ø§Ù„Ø³Ø¹Ø± Ø¨Ø§Ù„Ø¯ÙˆÙ„Ø§Ø± ØªÙ‚Ø±ÙŠØ¨Ù‹Ø§</th><th>ÙˆÙ‚Øª Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">Ø¬Ø§Ø±ÙŠ Ø¬Ù„Ø¨ Ø§Ù„Ø£Ø³Ø¹Ø§Ø±...</td></tr></tbody></table><small id="price-state">Ù…ØµØ¯Ø± Ø®Ø§Ø±Ø¬ÙŠØŒ ÙˆÙ„ÙŠØ³ Ø³Ø¹Ø± ØªÙ†ÙÙŠØ° Binance.</small></article>
-<article><h2>ðŸ“Š Ø£Ø±Ø¨Ø§Ø­ ÙˆØ®Ø³Ø§Ø¦Ø± Ø§Ù„ÙŠÙˆÙ…</h2><p><small>Ø§Ù„ÙŠÙˆÙ… Ø¨ØªÙˆÙ‚ÙŠØª Ø§Ù„ÙƒÙˆÙŠØªØŒ Ù…Ù† Ø³Ø¬Ù„ Ø¯Ø®Ù„ Binance Futures: Ø§Ù„Ø±Ø¨Ø­ ÙˆØ§Ù„Ø®Ø³Ø§Ø±Ø© Ø§Ù„Ù…Ø­Ù‚Ù‚Ø©ØŒ Ø§Ù„Ø¹Ù…ÙˆÙ„Ø§ØªØŒ ÙˆØ§Ù„ØªÙ…ÙˆÙŠÙ„. Ù„Ø§ ÙŠØ´Ù…Ù„ Ø£Ø±Ø¨Ø§Ø­ Ø§Ù„Ù…Ø±Ø§ÙƒØ² ØºÙŠØ± Ø§Ù„Ù…ØºÙ„Ù‚Ø©.</small></p><div id="daily-pnl">Ø¬Ø§Ø±ÙŠ Ø¹Ø±Ø¶ Ø¢Ø®Ø± Ù†ØªÙŠØ¬Ø© Ù…Ø­ÙÙˆØ¸Ø©...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">ØªØ­Ø¯ÙŠØ« Ø£Ø±Ø¨Ø§Ø­ ÙˆØ®Ø³Ø§Ø¦Ø± Ø§Ù„ÙŠÙˆÙ… (ÙƒÙ„ 15 Ø¯Ù‚ÙŠÙ‚Ø©)</button></form><small>Ø§Ù„Ù†ØªØ§Ø¦Ø¬ Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø© Ù‚Ø¯ÙŠÙ…Ø© Ø­ØªÙ‰ ØªØ¤ÙƒØ¯ Binance ØªØ­Ø¯ÙŠØ«Ù‡Ø§Ø› Ù„Ø§ ØªØ´Ù…Ù„ Ø£Ø±Ø¨Ø§Ø­ Ø§Ù„Ù…Ø±Ø§ÙƒØ² Ø§Ù„Ù…ÙØªÙˆØ­Ø©.</small></article>
-<article><h2>Ø§Ù„Ø£Ø³ÙˆØ§Ù‚ Ø§Ù„Ù…ØªØ§Ø¨Ø¹Ø©</h2><p>Ø¹Ù…Ù„Ø§Øª Ø±Ù‚Ù…ÙŠØ©: BTCUSDTØŒ ETHUSDTØŒ BNBUSDTØŒ SOLUSDTØŒ XRPUSDT</p><p>Ø°Ù‡Ø¨: XAUUSDT | ÙØ¶Ø©: XAGUSDT</p><p>Ù†ÙØ· WTI: CLUSDT | Ù†ÙØ· Ø¨Ø±Ù†Øª: BZUSDT</p><small>ÙŠØªÙ… Ø§Ø³ØªØ¨Ø¹Ø§Ø¯ Ø£ÙŠ Ø±Ù…Ø² ØºÙŠØ± Ù…ØªØ§Ø­ ÙÙŠ Binance Futures Ù„Ø­Ø³Ø§Ø¨Ùƒ.</small></article>
-<article><h2>ðŸ”Ž Ø§Ù„ÙØ­Øµ Ø§Ù„ØªÙ„Ù‚Ø§Ø¦ÙŠ Ù„ÙØ±Øµ Ø§Ù„ØªØ¯Ø§ÙˆÙ„</h2><p class=warn>ðŸ›¡ï¸ V34: ØªØ³ØªÙ…Ø± Ø£Ø³Ø¹Ø§Ø± Yahoo Ø§Ù„Ø®Ø§Ø±Ø¬ÙŠØ© Ø­ØªÙ‰ Ø¹Ù†Ø¯ Ø­Ø¸Ø± Binance. ØªØ­Ù„ÙŠÙ„ Ø´Ù…ÙˆØ¹ Binance Ù…ØªÙˆÙ‚Ù Ø§ÙØªØ±Ø§Ø¶ÙŠÙ‹Ø§ Ù„Ù…Ù†Ø¹ ØªÙƒØ±Ø§Ø± Ø­Ø¸Ø± IPØ› ÙŠÙ…ÙƒÙ† ØªÙØ¹ÙŠÙ„Ù‡ Ù„Ø§Ø­Ù‚Ù‹Ø§ Ø¹Ø¨Ø± BINANCE_MARKET_SCANS_ENABLED=true ÙÙŠ Render Ø¨Ø¹Ø¯ Ø§Ù„ØªØ£ÙƒØ¯ Ù…Ù† Ù…Ø¹Ø§Ù„Ø¬Ø© Ø­Ø¯ÙˆØ¯ Ø§Ù„Ø·Ù„Ø¨Ø§Øª. Ø£Ø³Ø¹Ø§Ø± Yahoo Ù„ÙŠØ³Øª Ø£Ø³Ø¹Ø§Ø± ØªÙ†ÙÙŠØ° ÙˆÙ„Ø§ ØªÙˆÙ„Ù‘Ø¯ ØªÙˆØµÙŠØ§Øª ØªØ¯Ø§ÙˆÙ„.</p><p id="auto-scan-status">â³ ÙŠØ¨Ø¯Ø£ Ø§Ù„ØªØ­Ù„ÙŠÙ„ ØªÙ„Ù‚Ø§Ø¦ÙŠÙ‹Ø§ Ø¨Ø¹Ø¯ ÙØªØ­ Ø§Ù„ØµÙØ­Ø©...</p><small>Ù„Ø§ ØªØ­ØªØ§Ø¬ Ø¥Ù„Ù‰ Ø§Ù„Ø¶ØºØ· Ø¹Ù„Ù‰ Ø£ÙŠ Ø²Ø±. ØªÙØ­Ø¯Ø« Ø§Ù„Ø´Ø§Ø´Ø© ÙƒÙ„ Ø«Ø§Ù†ÙŠØ© ÙˆÙŠÙØ¬Ø±Ù‰ ÙØ­Øµ ÙÙ†ÙŠ Ø¹Ù†Ø¯ ØªÙØ¹ÙŠÙ„Ù‡ ÙƒÙ„ 90 Ø«Ø§Ù†ÙŠØ© ÙƒØ­Ø¯ Ø£Ø¯Ù†Ù‰ Ø£Ø«Ù†Ø§Ø¡ Ø¨Ù‚Ø§Ø¡ Ø§Ù„ØµÙØ­Ø© Ù…ÙØªÙˆØ­Ø© ÙˆÙ†Ø´Ø·Ø©. Ù‚Ø¯ Ù„Ø§ ØªÙˆØ¬Ø¯ ÙØ±Øµ ØªØ³ØªÙˆÙÙŠ Ø§Ù„Ø´Ø±ÙˆØ·. Ù„Ø§ ØªÙØ±Ø³Ù„ Ø£ÙˆØ§Ù…Ø± Ø´Ø±Ø§Ø¡ Ø£Ùˆ Ø¨ÙŠØ¹ Ø¥Ù„Ø§ Ø¨Ø¹Ø¯ Ù…ÙˆØ§ÙÙ‚ØªÙƒØŒ ÙˆÙ…Ø¹ ØªÙØ¹ÙŠÙ„ Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ Ø¨Ø´ÙƒÙ„ Ù…Ù†ÙØµÙ„.</small></article>
-<article id="entry-suggestions"><h2>ÙØ±Øµ Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø©</h2><table><tr><th>Ø§Ù„Ø±Ù…Ø²</th><th>Ø§Ù„Ø§ØªØ¬Ø§Ù‡</th><th>Ø§Ù„Ø¯Ø®ÙˆÙ„ Ø§Ù„ØªÙ‚Ø±ÙŠØ¨ÙŠ</th><th>Ø§Ù„Ù‡Ø¯Ù</th><th>ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø©</th><th>ØµØ§ÙÙŠ Ø§Ù„Ù‡Ø¯Ù Ø§Ù„ØªÙ‚Ø¯ÙŠØ±ÙŠ</th><th>Ø§Ù„Ø£Ù…Ø±</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>â‰¥ {{prefs.target_roi_pct}}% Ø¹Ù„Ù‰ Ø§Ù„Ù‡Ø§Ù…Ø´ (ØªÙ‚Ø¯ÙŠØ±ÙŠ)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>Ù…ÙˆØ§ÙÙ‚Ø© ÙˆÙØªØ­ ÙÙˆØ±Ù‹Ø§</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">Ø±ÙØ¶</button></form></td></tr>{% else %}<tr><td colspan="7">Ù„Ø§ ØªÙˆØ¬Ø¯ ÙØ±Øµ</td></tr>{% endfor %}</table></article>
-<article><h2>Ø¢Ø®Ø± Ù…Ø±Ø§ÙƒØ² Binance Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø© (Ù‚Ø¯ ØªÙƒÙˆÙ† ØªØºÙŠÙ‘Ø±Øª)</h2><table><tr><th>Ø§Ù„Ø±Ù…Ø²</th><th>Ø§Ù„ÙƒÙ…ÙŠØ©</th><th>Ø§Ù„Ø¯Ø®ÙˆÙ„</th><th>Ø±Ø¨Ø­/Ø®Ø³Ø§Ø±Ø© ØºÙŠØ± Ù…Ø­Ù‚Ù‚Ø©</th><th>Ø¥ØºÙ„Ø§Ù‚</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">Ø¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø¢Ù†</button></form></td></tr>{% else %}<tr><td colspan="5">Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…Ø±Ø§ÙƒØ² ÙÙŠ Ø¢Ø®Ø± Ù„Ù‚Ø·Ø© Ù…Ø­ÙÙˆØ¸Ø© Ø£Ùˆ Ù„Ù… ØªÙØ­ÙØ¸ Ø¨ÙŠØ§Ù†Ø§Øª Ø¨Ø¹Ø¯</td></tr>{% endfor %}</table><small>Ø§Ù„Ø¥ØºÙ„Ø§Ù‚ MarketØ› Ø§Ù„Ø³Ø¹Ø± Ø§Ù„Ù†Ù‡Ø§Ø¦ÙŠ ÙˆØ§Ù„Ø±Ø³ÙˆÙ… Ù‚Ø¯ ÙŠØ®ØªÙ„ÙØ§Ù†. Ø£ÙˆØ§Ù…Ø± Ø§Ù„Ø­Ù…Ø§ÙŠØ© Ù‚Ø¯ ØªØºÙ„Ù‚ Ø§Ù„Ù…Ø±ÙƒØ² ØªÙ„Ù‚Ø§Ø¦ÙŠÙ‹Ø§.</small></article>
-<article><h2>ðŸ•’ Ù…Ø±Ø§Ù‚Ø¨Ø© ØªÙ„Ù‚Ø§Ø¦ÙŠØ© Ø£Ø«Ù†Ø§Ø¡ ÙØªØ­ Ø§Ù„ØµÙØ­Ø©</h2>
-<p>Ø¢Ø®Ø± ÙØ­Øµ: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'Ù„Ù… ÙŠØ¨Ø¯Ø£ Ø§Ù„ØªØ­Ù„ÙŠÙ„ Ø¨Ø¹Ø¯'}}</p>
-<p>ÙØ±Øµ Ø¬Ø¯ÙŠØ¯Ø© ÙÙŠ Ø¢Ø®Ø± ÙØ­Øµ: {{scan_state.opportunities if scan_state else 0}}</p>
-<details><summary>Ø£Ø³Ø¨Ø§Ø¨ Ø§Ø³ØªØ¨Ø¹Ø§Ø¯ Ø§Ù„ÙØ±Øµ</summary><small>{{scan_state.reason if scan_state else 'Ù„Ø§ ØªÙˆØ¬Ø¯ Ø¨ÙŠØ§Ù†Ø§Øª'}}</small></details>
-<div id="watch-status" aria-live="polite">Ø¨Ø¯Ø¡ Ø§Ù„Ù…Ø±Ø§Ù‚Ø¨Ø©...</div><small>ÙŠØªØ­Ø¯Ø« ÙˆÙ‚Øª Ø§Ù„Ø´Ø§Ø´Ø© ÙƒÙ„ Ø«Ø§Ù†ÙŠØ©Ø› Ø§Ù„ØªØ­Ù„ÙŠÙ„ Ø§Ù„ÙÙ†ÙŠ Ù„Ø§ ÙŠØ²Ø§Ù„ ÙŠØ¹ØªÙ…Ø¯ Ø¹Ù„Ù‰ Ø¨ÙŠØ§Ù†Ø§Øª Ø´Ù…ÙˆØ¹ Binance ÙƒÙ„ 90 Ø«Ø§Ù†ÙŠØ© ØªÙ‚Ø±ÙŠØ¨Ù‹Ø§ (Google Ù„Ø§ ÙŠÙ‚Ø¯Ù… Ø´Ù…ÙˆØ¹Ù‹Ø§ Ø¢Ù„ÙŠØ© Ù…ÙˆØ«ÙˆÙ‚Ø©)ØŒ ÙˆØªÙØ±Ø§Ø¬Ø¹ Ø§Ù‚ØªØ±Ø§Ø­Ø§Øª Ø§Ù„Ø¥ØºÙ„Ø§Ù‚ ÙƒÙ„ 5 Ø«ÙˆØ§Ù†Ù Ù…Ø§ Ø¯Ø§Ù…Øª Ø§Ù„ØµÙØ­Ø© Ù…ÙØªÙˆØ­Ø©. Ù„Ø§ ØªÙ†ÙØ° Ø§Ù„Ù…Ø±Ø§Ù‚Ø¨Ø© Ø£ÙŠ Ø£ÙˆØ§Ù…Ø±.</small></article>
-<article id="exit-suggestions"><h2>ðŸ”” Ø§Ù‚ØªØ±Ø§Ø­Ø§Øª Ø¥ØºÙ„Ø§Ù‚ Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ù‚Ø±Ø§Ø±Ùƒ</h2>
-<div id="live-exit-rows">Ø¬Ø§Ø±Ù ÙØ­Øµ Ø§Ù„Ù…Ø±Ø§ÙƒØ²...</div>
-<small>Ø§Ù„Ø±Ø¨Ø­ ØªÙ‚Ø¯ÙŠØ±ÙŠØ› Ø§Ù„Ø±Ø³ÙˆÙ… Ø§Ù„ÙØ¹Ù„ÙŠØ© ÙˆØ§Ù„ØªÙ…ÙˆÙŠÙ„ ÙˆØ§Ù„Ø§Ù†Ø²Ù„Ø§Ù‚ Ù‚Ø¯ ØªØºÙŠØ± Ø§Ù„Ù†ØªÙŠØ¬Ø©. ÙŠÙ…ÙƒÙ†Ùƒ Ø¥ØºÙ„Ø§Ù‚ Ø£ÙŠ Ù…Ø±ÙƒØ² ÙŠØ¯ÙˆÙŠÙ‹Ø§ Ù…Ù† Ø¬Ø¯ÙˆÙ„ Ø§Ù„Ù…Ø±Ø§ÙƒØ².</small>
+<article style="border:2px solid #1d9b83"><h2>⚡ أسعار Binance Futures المباشرة — WebSocket</h2>
+<p id="v36-ws-status" aria-live="polite">جاري الاتصال بالبث المباشر...</p>
+<small>أسعار Mark Price لعقود USDT-M المتاحة؛ ليست سعر تنفيذ مضمونًا. يتم تحديثها من Binance WebSocket دون طلب REST كل ثانية. عند انقطاع البث تظهر حالة الانقطاع ولا تُعرض الأسعار القديمة على أنها مباشرة.</small>
+<table><thead><tr><th>الرمز</th><th>Mark Price (USDT)</th><th>وقت التحديث</th></tr></thead><tbody id="v36-live-market"><tr><td colspan="3">بانتظار البث...</td></tr></tbody></table></article>
+<article><h2>💹 المراكز: ربح وخسارة متغيرة تقديريًا</h2>
+<p id="v36-position-status">بانتظار البث المباشر...</p>
+<table><thead><tr><th>الرمز</th><th>الكمية المحفوظة</th><th>سعر الدخول المحفوظ</th><th>Mark Price</th><th>ربح/خسارة تقديري</th></tr></thead><tbody id="v36-live-positions"></tbody></table>
+<p id="v36-equity">رصيد المحفظة المؤكد يبقى آخر لقطة محفوظة؛ القيمة الإجمالية المتغيرة هنا تقديرية وليست رصيد Binance المؤكد.</p>
+<small>حجم المركز وسعر دخوله مأخوذان من آخر لقطة محفوظة، وقد يتغيران في Binance دون علم الشاشة. التقدير لا يشمل الرسوم أو التمويل، ولا يُستخدم لتنفيذ الأوامر. لتحديث المراكز الحقيقية استخدم زر تحديث الرصيد المحدود أعلاه.</small></article>
+<article><h2>📈 الأسعار داخل البوت</h2><p><small>بيانات Yahoo Finance العامة غير الرسمية، قد تكون متأخرة أو غير متاحة؛ تختلف عن عقود Binance. يتم تحديث الشاشة كل ثانية، وجلب المصدر كل 30 ثانية تقريبًا.</small></p>
+<table><thead><tr><th>السوق</th><th>السعر بالدولار تقريبًا</th><th>وقت البيانات</th></tr></thead><tbody id="external-prices"><tr><td colspan="3">جاري جلب الأسعار...</td></tr></tbody></table><small id="price-state">مصدر خارجي، وليس سعر تنفيذ Binance.</small></article>
+<article><h2>📊 أرباح وخسائر اليوم</h2><p><small>اليوم بتوقيت الكويت، من سجل دخل Binance Futures: الربح والخسارة المحققة، العمولات، والتمويل. لا يشمل أرباح المراكز غير المغلقة.</small></p><div id="daily-pnl">جاري عرض آخر نتيجة محفوظة...</div><form method="post" action="/api/v34-pnl-refresh"><input type="hidden" name="csrf" value="{{csrf}}"><button type="submit">تحديث أرباح وخسائر اليوم (كل 15 دقيقة)</button></form><small>النتائج المحفوظة قديمة حتى تؤكد Binance تحديثها؛ لا تشمل أرباح المراكز المفتوحة.</small></article>
+<article><h2>الأسواق المتابعة</h2><p>عملات رقمية: BTCUSDT، ETHUSDT، BNBUSDT، SOLUSDT، XRPUSDT</p><p>ذهب: XAUUSDT | فضة: XAGUSDT</p><p>نفط WTI: CLUSDT | نفط برنت: BZUSDT</p><small>يتم استبعاد أي رمز غير متاح في Binance Futures لحسابك.</small></article>
+<article><h2>🔎 الفحص التلقائي لفرص التداول</h2><p class=warn>🛡️ V34: تستمر أسعار Yahoo الخارجية حتى عند حظر Binance. تحليل شموع Binance متوقف افتراضيًا لمنع تكرار حظر IP؛ يمكن تفعيله لاحقًا عبر BINANCE_MARKET_SCANS_ENABLED=true في Render بعد التأكد من معالجة حدود الطلبات. أسعار Yahoo ليست أسعار تنفيذ ولا تولّد توصيات تداول.</p><p id="auto-scan-status">⏳ يبدأ التحليل تلقائيًا بعد فتح الصفحة...</p><small>لا تحتاج إلى الضغط على أي زر. تُحدث الشاشة كل ثانية ويُجرى فحص فني عند تفعيله كل 90 ثانية كحد أدنى أثناء بقاء الصفحة مفتوحة ونشطة. قد لا توجد فرص تستوفي الشروط. لا تُرسل أوامر شراء أو بيع إلا بعد موافقتك، ومع تفعيل التداول الحقيقي بشكل منفصل.</small></article>
+<article id="entry-suggestions"><h2>فرص بانتظار الموافقة</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الدخول التقريبي</th><th>الهدف</th><th>وقف الخسارة</th><th>صافي الهدف التقديري</th><th>الأمر</th></tr>{% for x in pending %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.entry_reference}}</td><td>{{x.take_reference}}</td><td>{{x.stop_reference}}</td><td>≥ {{prefs.target_roi_pct}}% على الهامش (تقديري)</td><td><form method="post" action="{{url_for('approve',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button>موافقة وفتح فورًا</button></form><form method="post" action="{{url_for('reject',order_id=x.id)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">رفض</button></form></td></tr>{% else %}<tr><td colspan="7">لا توجد فرص</td></tr>{% endfor %}</table></article>
+<article><h2>آخر مراكز Binance المحفوظة (قد تكون تغيّرت)</h2><table><tr><th>الرمز</th><th>الكمية</th><th>الدخول</th><th>ربح/خسارة غير محققة</th><th>إغلاق</th></tr>{% for p in positions %}<tr><td>{{p.symbol}}</td><td>{{p.positionAmt}}</td><td>{{p.entryPrice}}</td><td>{{p.unRealizedProfit}} USDT</td><td><form method="post" action="{{url_for('close_position',symbol=p.symbol)}}"><input type="hidden" name="csrf" value="{{csrf}}"><button class="danger">إغلاق الآن</button></form></td></tr>{% else %}<tr><td colspan="5">لا توجد مراكز في آخر لقطة محفوظة أو لم تُحفظ بيانات بعد</td></tr>{% endfor %}</table><small>الإغلاق Market؛ السعر النهائي والرسوم قد يختلفان. أوامر الحماية قد تغلق المركز تلقائيًا.</small></article>
+<article><h2>🕒 مراقبة تلقائية أثناء فتح الصفحة</h2>
+<p>آخر فحص: {{scan_state.checked_at if scan_state and scan_state.checked_at else 'لم يبدأ التحليل بعد'}}</p>
+<p>فرص جديدة في آخر فحص: {{scan_state.opportunities if scan_state else 0}}</p>
+<details><summary>أسباب استبعاد الفرص</summary><small>{{scan_state.reason if scan_state else 'لا توجد بيانات'}}</small></details>
+<div id="watch-status" aria-live="polite">بدء المراقبة...</div><small>يتحدث وقت الشاشة كل ثانية؛ التحليل الفني لا يزال يعتمد على بيانات شموع Binance كل 90 ثانية تقريبًا (Google لا يقدم شموعًا آلية موثوقة)، وتُراجع اقتراحات الإغلاق كل 5 ثوانٍ ما دامت الصفحة مفتوحة. لا تنفذ المراقبة أي أوامر.</small></article>
+<article id="exit-suggestions"><h2>🔔 اقتراحات إغلاق بانتظار قرارك</h2>
+<div id="live-exit-rows">جارٍ فحص المراكز...</div>
+<small>الربح تقديري؛ الرسوم الفعلية والتمويل والانزلاق قد تغير النتيجة. يمكنك إغلاق أي مركز يدويًا من جدول المراكز.</small>
 </article>
-<article><h2>Ø¢Ø®Ø± Ø§Ù„Ø£ÙˆØ§Ù…Ø±</h2><table><tr><th>Ø§Ù„Ø±Ù…Ø²</th><th>Ø§Ù„Ø§ØªØ¬Ø§Ù‡</th><th>Ø§Ù„Ø­Ø§Ù„Ø©</th><th>Ù…Ù„Ø§Ø­Ø¸Ø©</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or 'â€”'}}</td></tr>{% endfor %}</table></article>{% endif %}</main><script>
+<article><h2>آخر الأوامر</h2><table><tr><th>الرمز</th><th>الاتجاه</th><th>الحالة</th><th>ملاحظة</th></tr>{% for x in recent %}<tr><td>{{x.symbol}}</td><td>{{x.direction}}</td><td>{{x.status}}</td><td>{{x.note or '—'}}</td></tr>{% endfor %}</table></article>{% endif %}</main><script>
 (function(){
  const el=document.getElementById('google-clock');
  if(!el)return;
- function tick(){if(!document.hidden)el.textContent='ÙˆÙ‚Øª Ø§Ù„Ø´Ø§Ø´Ø©: '+new Date().toLocaleTimeString('ar-KW');}
+ function tick(){if(!document.hidden)el.textContent='وقت الشاشة: '+new Date().toLocaleTimeString('ar-KW');}
  tick();setInterval(tick,1000);
 })();
 
@@ -696,33 +696,33 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const data=await res.json();
      const entry=document.querySelector('#entry-suggestions table');
      if(entry){const rows=entry.querySelectorAll('tr');rows.forEach((r,i)=>{if(i>0)r.remove()});
-       for(const x of data.entries){const tr=document.createElement('tr');td(tr,x.symbol);td(tr,x.direction);td(tr,x.entry_reference);td(tr,x.take_reference);td(tr,x.stop_reference);td(tr,'Ù‡Ø¯Ù ØµØ§ÙÙŠ ØªÙ‚Ø¯ÙŠØ±ÙŠ');td(tr,'');action(tr,'/approve/'+encodeURIComponent(x.id),'Ù…ÙˆØ§ÙÙ‚Ø© ÙˆÙØªØ­ ÙÙˆØ±Ù‹Ø§',false);action(tr,'/reject/'+encodeURIComponent(x.id),'Ø±ÙØ¶',true);entry.appendChild(tr)}
-       if(!data.entries.length){const tr=document.createElement('tr');const c=td(tr,'Ù„Ø§ ØªÙˆØ¬Ø¯ ÙØ±Øµ Ù…Ù†Ø§Ø³Ø¨Ø© Ø­Ø§Ù„ÙŠÙ‹Ø§');c.colSpan=7;entry.appendChild(tr)}
+       for(const x of data.entries){const tr=document.createElement('tr');td(tr,x.symbol);td(tr,x.direction);td(tr,x.entry_reference);td(tr,x.take_reference);td(tr,x.stop_reference);td(tr,'هدف صافي تقديري');td(tr,'');action(tr,'/approve/'+encodeURIComponent(x.id),'موافقة وفتح فورًا',false);action(tr,'/reject/'+encodeURIComponent(x.id),'رفض',true);entry.appendChild(tr)}
+       if(!data.entries.length){const tr=document.createElement('tr');const c=td(tr,'لا توجد فرص مناسبة حاليًا');c.colSpan=7;entry.appendChild(tr)}
      }
      const exit=document.getElementById('exit-suggestions');
      if(exit){let holder=document.getElementById('live-exit-rows');if(!holder){holder=document.createElement('div');holder.id='live-exit-rows';exit.insertBefore(holder,exit.children[1]||null)}holder.replaceChildren();
-       for(const x of data.exits){const p=document.createElement('p');p.textContent=x.symbol+' | ØµØ§ÙÙŠ ØªÙ‚Ø¯ÙŠØ±ÙŠ '+(Number(x.estimated_net_roi)*100).toFixed(2)+'% | '+x.estimated_net_usdt+' USDT';holder.appendChild(p);
-         const tr=document.createElement('div');td(tr,'');action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/approve','Ù…ÙˆØ§ÙÙ‚Ø© ÙˆØ¥ØºÙ„Ø§Ù‚ Ø§Ù„Ø¢Ù†',true);action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/reject','Ø±ÙØ¶ Ø§Ù„Ø§Ù‚ØªØ±Ø§Ø­',false);holder.appendChild(tr)}
-       if(!data.exits.length){const p=document.createElement('p');p.textContent='Ù„Ø§ ØªÙˆØ¬Ø¯ Ø§Ù‚ØªØ±Ø§Ø­Ø§Øª Ø¥ØºÙ„Ø§Ù‚ ØªØ­Ù‚Ù‚ Ø§Ù„Ù‡Ø¯Ù Ø­Ø§Ù„ÙŠÙ‹Ø§.';holder.appendChild(p)}
+       for(const x of data.exits){const p=document.createElement('p');p.textContent=x.symbol+' | صافي تقديري '+(Number(x.estimated_net_roi)*100).toFixed(2)+'% | '+x.estimated_net_usdt+' USDT';holder.appendChild(p);
+         const tr=document.createElement('div');td(tr,'');action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/approve','موافقة وإغلاق الآن',true);action(tr,'/close-suggestions/'+encodeURIComponent(x.symbol)+'/reject','رفض الاقتراح',false);holder.appendChild(tr)}
+       if(!data.exits.length){const p=document.createElement('p');p.textContent='لا توجد اقتراحات إغلاق تحقق الهدف حاليًا.';holder.appendChild(p)}
      }
-     watch.textContent='Ø§Ù„Ù…Ø±Ø§Ù‚Ø¨Ø© ØªØ¹Ù…Ù„ | Ø¢Ø®Ø± ÙØ­Øµ ÙÙ†ÙŠ: '+(data.last_scan?new Date(data.last_scan).toLocaleTimeString('ar-KW'):'Ù„Ù… ÙŠØ¨Ø¯Ø£');
-   }catch(e){watch.textContent='ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„ÙØ±Øµ Ù…Ø¤Ù‚ØªÙ‹Ø§';}
+     watch.textContent='المراقبة تعمل | آخر فحص فني: '+(data.last_scan?new Date(data.last_scan).toLocaleTimeString('ar-KW'):'لم يبدأ');
+   }catch(e){watch.textContent='تعذر تحديث الفرص مؤقتًا';}
    finally{loading=false;}
  }
  async function trigger(){
    if(watching||document.hidden)return;
    watching=true;
    const label=document.getElementById('auto-scan-status');
-   if(label)label.textContent='â³ Ø§Ù„Ù…Ø±Ø§Ù‚Ø¨Ø© ØªØ¹Ù…Ù„Ø› Ø¬Ø§Ø±ÙŠ Ø§Ù„ØªØ­Ù‚Ù‚ Ù…Ù† ÙØ±Øµ Ø§Ù„ØªØ¯Ø§ÙˆÙ„...';
+   if(label)label.textContent='⏳ المراقبة تعمل؛ جاري التحقق من فرص التداول...';
    try{
      const response=await fetch('/api/browser-watch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'csrf='+encodeURIComponent(csrf),credentials:'same-origin',cache:'no-store'});
      const result=await response.json();
-     if(!response.ok)throw Error(result.error||'ØªØ¹Ø°Ø± Ø§Ù„ÙØ­Øµ');
-     if(label)label.textContent=result.status==='binance_scans_disabled'?'ðŸ›¡ï¸ Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø£Ø³ÙˆØ§Ù‚ Ø§Ù„Ø®Ø§Ø±Ø¬ÙŠØ© Ù…Ø³ØªÙ…Ø±Ø©Ø› ÙØ­Øµ Binance Ù…ØªÙˆÙ‚Ù Ø§Ø­ØªØ±Ø§Ø²ÙŠÙ‹Ø§':(result.status==='binance_banned'?'â³ Binance Ù…Ø­Ø¸ÙˆØ±Ø› Ø§Ù„ØªØ­Ù„ÙŠÙ„ Ø§Ù„Ù…Ø¹ØªÙ…Ø¯ Ø¹Ù„ÙŠÙ‡ Ù…Ø¤Ø¬Ù„':(result.scanned?'âœ… Ø§ÙƒØªÙ…Ù„ ÙØ­Øµ Binance':'ðŸŸ¢ Ø§Ù„Ù…Ø±Ø§Ù‚Ø¨Ø© ØªØ¹Ù…Ù„Ø› Ø§Ù„ÙØ­Øµ Ø§Ù„ØªØ§Ù„ÙŠ Ø¨Ø¹Ø¯ Ø§Ù„Ù…Ù‡Ù„Ø© Ø§Ù„Ù…Ø­Ø¯Ø¯Ø©'));
-   }catch(e){if(label)label.textContent='âš ï¸ ÙØ´Ù„ Ø§Ù„ÙØ­Øµ Ø§Ù„ØªÙ„Ù‚Ø§Ø¦ÙŠ: '+e.message;}
+     if(!response.ok)throw Error(result.error||'تعذر الفحص');
+     if(label)label.textContent=result.status==='binance_scans_disabled'?'🛡️ أسعار الأسواق الخارجية مستمرة؛ فحص Binance متوقف احترازيًا':(result.status==='binance_banned'?'⏳ Binance محظور؛ التحليل المعتمد عليه مؤجل':(result.scanned?'✅ اكتمل فحص Binance':'🟢 المراقبة تعمل؛ الفحص التالي بعد المهلة المحددة'));
+   }catch(e){if(label)label.textContent='⚠️ فشل الفحص التلقائي: '+e.message;}
    finally{watching=false;refresh();}
  }
- const symbols=[['Ø¨ÙŠØªÙƒÙˆÙŠÙ†','BTCUSDT'],['Ø¥ÙŠØ«Ø±ÙŠÙˆÙ…','ETHUSDT'],['BNB','BNBUSDT'],['Ø³ÙˆÙ„Ø§Ù†Ø§','SOLUSDT'],['XRP','XRPUSDT'],['Ø§Ù„Ø°Ù‡Ø¨','XAUUSDT'],['Ø§Ù„ÙØ¶Ø©','XAGUSDT'],['Ù†ÙØ· WTI','CLUSDT'],['Ù†ÙØ· Ø¨Ø±Ù†Øª','BZUSDT']];
+ const symbols=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['نفط WTI','CLUSDT'],['نفط برنت','BZUSDT']];
  async function refreshMarket(){
    const tbody=document.getElementById('external-prices');
    if(!tbody)return;
@@ -732,19 +732,19 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
      const data=await r.json();tbody.replaceChildren();
      for(const [name,sym] of symbols){
        const tr=document.createElement('tr'),item=data.prices[sym];
-       td(tr,name+' '+sym);td(tr,item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'ØºÙŠØ± Ù…ØªØ§Ø­');
-       td(tr,item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'â€”');tbody.appendChild(tr);
+       td(tr,name+' '+sym);td(tr,item&&item.price!==null?Number(item.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح');
+       td(tr,item&&item.asof?new Date(item.asof).toLocaleTimeString('ar-KW'):'—');tbody.appendChild(tr);
      }
-     document.getElementById('price-state').textContent='Ø¢Ø®Ø± ØªØ­Ø¯ÙŠØ« Ù…Ù† Ø§Ù„Ù…ØµØ¯Ø±: '+(data.checked_at?new Date(data.checked_at).toLocaleTimeString('ar-KW'):'ØºÙŠØ± Ù…ØªØ§Ø­')+' | Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ù‚Ø¯ ØªÙƒÙˆÙ† Ù…ØªØ£Ø®Ø±Ø©';
-   }catch(e){document.getElementById('price-state').textContent='ØªØ¹Ø°Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø®Ø§Ø±Ø¬ÙŠØ© Ù…Ø¤Ù‚ØªÙ‹Ø§';}
+     document.getElementById('price-state').textContent='آخر تحديث من المصدر: '+(data.checked_at?new Date(data.checked_at).toLocaleTimeString('ar-KW'):'غير متاح')+' | البيانات قد تكون متأخرة';
+   }catch(e){document.getElementById('price-state').textContent='تعذر تحديث الأسعار الخارجية مؤقتًا';}
  }
  async function refreshPnL(){
    try{
      const r=await fetch('/api/daily-pnl',{credentials:'same-origin',cache:'no-store'});
      if(!r.ok)throw Error('pnl');
      const p=await r.json();
-     document.getElementById('daily-pnl').textContent='Ø¢Ø®Ø± Ù†ØªÙŠØ¬Ø© Ù…Ø­ÙÙˆØ¸Ø© (Ù„ÙŠØ³Øª Ù„Ø­Ø¸ÙŠØ©): Ø£Ø±Ø¨Ø§Ø­ '+p.gains+' USDT | Ø®Ø³Ø§Ø¦Ø± '+p.losses+' USDT | Ø±Ø³ÙˆÙ… ÙˆØªÙ…ÙˆÙŠÙ„ '+p.fees_funding+' USDT | Ø§Ù„ØµØ§ÙÙŠ '+p.net+' USDT | '+p.day+' | Ø¢Ø®Ø± ØªØ­Ø¯ÙŠØ« '+(p.captured_at?new Date(p.captured_at).toLocaleString('ar-KW'):'ØºÙŠØ± Ù…Ø¹Ø±ÙˆÙ');
-   }catch(e){document.getElementById('daily-pnl').textContent='Ù„Ø§ ØªÙˆØ¬Ø¯ Ù†ØªØ§Ø¦Ø¬ ÙŠÙˆÙ…ÙŠØ© Ù…Ø¤ÙƒØ¯Ø© Ù…Ø­ÙÙˆØ¸Ø© Ø¨Ø¹Ø¯Ø› Ø§Ø³ØªØ®Ø¯Ù… Ø²Ø± Ø§Ù„ØªØ­Ø¯ÙŠØ« Ø¨Ø¹Ø¯ Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ø­Ø¸Ø±.';}
+     document.getElementById('daily-pnl').textContent='آخر نتيجة محفوظة (ليست لحظية): أرباح '+p.gains+' USDT | خسائر '+p.losses+' USDT | رسوم وتمويل '+p.fees_funding+' USDT | الصافي '+p.net+' USDT | '+p.day+' | آخر تحديث '+(p.captured_at?new Date(p.captured_at).toLocaleString('ar-KW'):'غير معروف');
+   }catch(e){document.getElementById('daily-pnl').textContent='لا توجد نتائج يومية مؤكدة محفوظة بعد؛ استخدم زر التحديث بعد انتهاء الحظر.';}
  }
  refreshMarket();refreshPnL();setInterval(refreshMarket,15000);setInterval(refreshPnL,1000);
  refresh();trigger();setInterval(refresh,10000);setInterval(trigger,90000);
@@ -761,12 +761,12 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
    busy=true;
    try{
      const r=await fetch('/api/v37-live-account',{cache:'no-store',credentials:'same-origin'});
-     if(!r.ok)throw Error('ØªØ¹Ø°Ø± Ù‚Ø±Ø§Ø¡Ø© Ø§Ù„Ø­Ø³Ø§Ø¨');
+     if(!r.ok)throw Error('تعذر قراءة الحساب');
      const x=await r.json();
-     if(x.balance!==null){bal.textContent=x.balance+' USDT';at.textContent='Ø¢Ø®Ø± ØªØ£ÙƒÙŠØ¯ Ù…Ù† Binance: '+new Date(x.captured_at).toLocaleString('ar-KW');}
-     else{bal.textContent='Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø£ÙˆÙ„ ØªØ­Ø¯ÙŠØ« Ù…Ø¤ÙƒØ¯ Ù…Ù† Binance';}
-     status.textContent=x.message||'Ø¢Ø®Ø± Ø¨ÙŠØ§Ù†Ø§Øª Ù…Ø¤ÙƒØ¯Ø© Ù…Ø­ÙÙˆØ¸Ø©';
-   }catch(e){status.textContent='ØªØ¹Ø°Ø± Ø§Ù„ØªØ­Ø¯ÙŠØ« Ù…Ø¤Ù‚ØªÙ‹Ø§Ø› Ø¢Ø®Ø± Ø±ØµÙŠØ¯ Ù…Ø­ÙÙˆØ¸ Ù„Ø§ ÙŠØ²Ø§Ù„ Ø¸Ø§Ù‡Ø±Ù‹Ø§';}
+     if(x.balance!==null){bal.textContent=x.balance+' USDT';at.textContent='آخر تأكيد من Binance: '+new Date(x.captured_at).toLocaleString('ar-KW');}
+     else{bal.textContent='بانتظار أول تحديث مؤكد من Binance';}
+     status.textContent=x.message||'آخر بيانات مؤكدة محفوظة';
+   }catch(e){status.textContent='تعذر التحديث مؤقتًا؛ آخر رصيد محفوظ لا يزال ظاهرًا';}
    finally{busy=false;}
  }
  poll();setInterval(poll,1000);
@@ -774,20 +774,20 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 </script><script>(function(){
  let until=0,reason='';const msg=document.getElementById('binance-ban-message'),timer=document.getElementById('binance-ban-timer');
  if(!msg||!timer)return;
- function render(){if(!until){timer.textContent='Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø­Ø¸Ø± Ù…Ø³Ø¬Ù„';msg.textContent='Ø¢Ø®Ø± Ø­Ø§Ù„Ø© Ù…Ø­ÙÙˆØ¸Ø©: Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø­Ø¸Ø± Ù†Ø´Ø· Ù…Ø¹Ø±ÙˆÙ.';return}
+ function render(){if(!until){timer.textContent='لا يوجد حظر مسجل';msg.textContent='آخر حالة محفوظة: لا يوجد حظر نشط معروف.';return}
  const seconds=Math.max(0,Math.ceil((until-Date.now())/1000));
  const h=Math.floor(seconds/3600),m=Math.floor((seconds%3600)/60),s=seconds%60;
- timer.textContent=seconds?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:'Ø§Ù†ØªÙ‡Ù‰ Ø§Ù„ÙˆÙ‚Øª Ø§Ù„Ù…Ø³Ø¬Ù„ â€” Ù„Ù… ÙŠØªÙ… ØªØ£ÙƒÙŠØ¯ Ø±ÙØ¹ Ø§Ù„Ø­Ø¸Ø±';
- msg.textContent=reason+(seconds?' | Ù…ÙˆØ¹Ø¯ Ø§Ù„Ø§Ù†ØªÙ‡Ø§Ø¡ Ø¨ØªÙˆÙ‚ÙŠØª Ø§Ù„ÙƒÙˆÙŠØª: '+new Date(until).toLocaleString('ar-KW',{timeZone:'Asia/Kuwait'}):'');
+ timer.textContent=seconds?`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`:'انتهى الوقت المسجل — لم يتم تأكيد رفع الحظر';
+ msg.textContent=reason+(seconds?' | موعد الانتهاء بتوقيت الكويت: '+new Date(until).toLocaleString('ar-KW',{timeZone:'Asia/Kuwait'}):'');
  }
- async function update(){try{const r=await fetch('/api/binance-ban-status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();until=Number(d.until_ms)||0;reason=d.reason||'';render()}catch(e){msg.textContent='ØªØ¹Ø°Ø± Ù‚Ø±Ø§Ø¡Ø© Ø­Ø§Ù„Ø© Ø§Ù„Ø­Ø¸Ø± Ø­Ø§Ù„ÙŠÙ‹Ø§'}}
+ async function update(){try{const r=await fetch('/api/binance-ban-status',{cache:'no-store',credentials:'same-origin'});if(!r.ok)return;const d=await r.json();until=Number(d.until_ms)||0;reason=d.reason||'';render()}catch(e){msg.textContent='تعذر قراءة حالة الحظر حاليًا'}}
  update();render();setInterval(render,1000);setInterval(update,15000);
 })();</script><script>
 (function(){
   const prices=new Map();
   const symbols=['btcusdt','ethusdt','bnbusdt','solusdt','xrpusdt'];
   const saved={{ positions|default([],true)|tojson }};
-  const rawBalance={{ balance|default('ØºÙŠØ± Ù…ØªØ§Ø­')|tojson }};
+  const rawBalance={{ balance|default('غير متاح')|tojson }};
   const wallet=Number(String(rawBalance).split(' ')[0]);
   const status=document.getElementById('v36-ws-status');
   if(!status)return;
@@ -803,11 +803,11 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
   function paint(){
     const now=Date.now();
     const fresh=now-lastEvent<12000;
-    if(!fresh){status.textContent='âš ï¸ Ø§Ù„Ø¨Ø« Ø§Ù„Ù…Ø¨Ø§Ø´Ø± ØºÙŠØ± Ù…ØªØµÙ„ Ø£Ùˆ Ù…ØªØ£Ø®Ø± â€” Ù„Ø§ ØªØ¹ØªÙ…Ø¯ Ø¹Ù„Ù‰ Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø©';}
+    if(!fresh){status.textContent='⚠️ البث المباشر غير متصل أو متأخر — لا تعتمد على الأسعار القديمة';}
     body.replaceChildren();
     for(const sym of allSymbols){
       const d=prices.get(sym);const tr=document.createElement('tr');
-      for(const value of [sym.toUpperCase(),fresh&&d?fmt(d.price):'â€”',fresh&&d?formatTime(d.time):'â€”']){
+      for(const value of [sym.toUpperCase(),fresh&&d?fmt(d.price):'—',fresh&&d?formatTime(d.time):'—']){
         const td=document.createElement('td');td.textContent=value;tr.appendChild(td);
       }body.appendChild(tr);
     }
@@ -819,35 +819,35 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
       const pnl=valid?amount*(d.price-entry):null;
       if(valid)total+=pnl;else complete=false;
       const tr=document.createElement('tr');
-      for(const value of [sym.toUpperCase(),p.positionAmt,p.entryPrice,valid?fmt(d.price):'â€”',valid?fmt(pnl)+' USDT':'ØºÙŠØ± Ù…ØªØ§Ø­']){
+      for(const value of [sym.toUpperCase(),p.positionAmt,p.entryPrice,valid?fmt(d.price):'—',valid?fmt(pnl)+' USDT':'غير متاح']){
         const td=document.createElement('td');td.textContent=String(value);tr.appendChild(td);
       }posBody.appendChild(tr);
     }
-    posStatus.textContent=!saved.length?'Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…Ø±Ø§ÙƒØ² Ù…Ø­ÙÙˆØ¸Ø©Ø› Ø­Ø¯Ù‘Ø« Ù„Ù‚Ø·Ø© Ø§Ù„Ø­Ø³Ø§Ø¨ Ù„Ø¹Ø±Ø¶ Ù…Ø±Ø§ÙƒØ²Ùƒ.':
-      complete?'ðŸŸ¢ Ø§Ù„Ø±Ø¨Ø­ ÙˆØ§Ù„Ø®Ø³Ø§Ø±Ø© ÙŠØªØºÙŠØ±Ø§Ù† Ù…Ø¹ Ø§Ù„Ø³Ø¹Ø±ØŒ Ù„ÙƒÙ† Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø±Ø§ÙƒØ² Ù…Ø­ÙÙˆØ¸Ø© ÙˆÙ‚Ø¯ÙŠÙ…Ø©':'âš ï¸ ØªÙ‚Ø¯ÙŠØ± Ø§Ù„Ù…Ø±Ø§ÙƒØ² ØºÙŠØ± Ù…ÙƒØªÙ…Ù„ Ø£Ùˆ Ø§Ù„Ø¨Ø« Ù…Ù†Ù‚Ø·Ø¹';
+    posStatus.textContent=!saved.length?'لا توجد مراكز محفوظة؛ حدّث لقطة الحساب لعرض مراكزك.':
+      complete?'🟢 الربح والخسارة يتغيران مع السعر، لكن بيانات المراكز محفوظة وقديمة':'⚠️ تقدير المراكز غير مكتمل أو البث منقطع';
     equity.textContent=complete&&Number.isFinite(wallet)?
-      'Ø§Ù„Ù‚ÙŠÙ…Ø© Ø§Ù„ØªÙ‚Ø¯ÙŠØ±ÙŠØ© (Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© Ø§Ù„Ù…Ø­ÙÙˆØ¸ + PnL Ø§Ù„Ù…Ø±Ø§ÙƒØ² Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø©): '+fmt(wallet+total)+' USDT â€” Ù„ÙŠØ³Øª Ø±ØµÙŠØ¯Ù‹Ø§ Ù…Ø¨Ø§Ø´Ø±Ù‹Ø§ Ù…Ø¤ÙƒØ¯Ù‹Ø§':
-      'Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙØ¸Ø© Ø§Ù„Ù…Ø¤ÙƒØ¯ ÙŠØ¨Ù‚Ù‰ Ø¢Ø®Ø± Ù„Ù‚Ø·Ø© Ù…Ø­ÙÙˆØ¸Ø©Ø› Ù„Ø§ ÙŠÙ…ÙƒÙ† Ø­Ø³Ø§Ø¨ Ø§Ù„Ù‚ÙŠÙ…Ø© Ø§Ù„Ø­Ø§Ù„ÙŠØ© Ø¨Ø«Ù‚Ø©.';
+      'القيمة التقديرية (رصيد المحفظة المحفوظ + PnL المراكز المحفوظة): '+fmt(wallet+total)+' USDT — ليست رصيدًا مباشرًا مؤكدًا':
+      'رصيد المحفظة المؤكد يبقى آخر لقطة محفوظة؛ لا يمكن حساب القيمة الحالية بثقة.';
   }
   function connect(){
     if(stopped||document.hidden)return;
     const streams=allSymbols.map(s=>s+'@markPrice@1s').join('/');
     if(!streams)return;
     ws=new WebSocket('wss://fstream.binance.com/stream?streams='+streams);
-    ws.onopen=()=>{retry=0;status.textContent='ðŸŸ¢ Ù…ØªØµÙ„ Ø¨Ø¨Ø« Binance Futures â€” Ø¨Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„Ø£Ø³Ø¹Ø§Ø±';};
+    ws.onopen=()=>{retry=0;status.textContent='🟢 متصل ببث Binance Futures — بانتظار الأسعار';};
     ws.onmessage=event=>{
       try{const msg=JSON.parse(event.data),p=msg.data||msg;
         if(p.e!=='markPriceUpdate'||!p.s)return;
         const price=Number(p.p);if(!Number.isFinite(price)||price<=0)return;
         prices.set(p.s.toLowerCase(),{price,time:Number(p.E)||Date.now()});
-        lastEvent=Date.now();status.textContent='ðŸŸ¢ Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ù…Ø¨Ø§Ø´Ø±Ø© â€” Ø¢Ø®Ø± ØªØ­Ø¯ÙŠØ« '+formatTime(lastEvent);
+        lastEvent=Date.now();status.textContent='🟢 الأسعار مباشرة — آخر تحديث '+formatTime(lastEvent);
         paint();
       }catch(e){}
     };
-    ws.onerror=()=>{status.textContent='âš ï¸ ØªØ¹Ø°Ø± Ø§Ù„Ø§ØªØµØ§Ù„ Ø¨Ø¨Ø« Binance';};
+    ws.onerror=()=>{status.textContent='⚠️ تعذر الاتصال ببث Binance';};
     ws.onclose=()=>{
       if(stopped)return;
-      status.textContent='âš ï¸ Ø§Ù†Ù‚Ø·Ø¹ Ø¨Ø« Binance â€” Ø¥Ø¹Ø§Ø¯Ø© Ø§ØªØµØ§Ù„ ØªØ¯Ø±ÙŠØ¬ÙŠØ©';
+      status.textContent='⚠️ انقطع بث Binance — إعادة اتصال تدريجية';
       const delay=Math.min(60000,2000*Math.pow(2,Math.min(retry++,5)));
       setTimeout(()=>{if(!document.hidden)connect();},delay);
     };
@@ -873,7 +873,7 @@ def browser_watch():
         check_csrf()
         if is_bot_paused(): return {'status':'paused','scanned':False}
         if not BINANCE_MARKET_SCANS_ENABLED:
-            return {'status':'binance_scans_disabled','scanned':False,'message':'Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø®Ø§Ø±Ø¬ÙŠØ© ØªØ¹Ù…Ù„ØŒ ÙˆÙØ­Øµ Binance Ù…ØªÙˆÙ‚Ù Ø§Ø­ØªØ±Ø§Ø²ÙŠÙ‹Ø§'}
+            return {'status':'binance_scans_disabled','scanned':False,'message':'الأسعار الخارجية تعمل، وفحص Binance متوقف احترازيًا'}
         # Cross-process rate limiting: only one browser scan per 90 seconds.
         if _cooldown_state()['remaining_seconds']>0:
             return {'status':'binance_banned','scanned':False,'remaining_seconds':_cooldown_state()['remaining_seconds']}
@@ -886,7 +886,7 @@ def browser_watch():
         return {'status':'ok','scanned':should_scan}
     except Exception:
         logging.exception('Browser watch failed')
-        return {'error':'ØªØ¹Ø°Ø±Øª Ø§Ù„Ù…Ø±Ø§Ù‚Ø¨Ø© Ù…Ø¤Ù‚ØªÙ‹Ø§'},503
+        return {'error':'تعذرت المراقبة مؤقتًا'},503
 
 @app.route('/api/browser-suggestions')
 @auth
@@ -906,7 +906,7 @@ def browser_suggestions():
                 'last_scan':status['checked_at'].isoformat() if status and status['checked_at'] else None}
     except Exception:
         logging.exception('Suggestions refresh failed')
-        return {'error':'ØªØ¹Ø°Ø± Ø¬Ù„Ø¨ Ø§Ù„ÙØ±Øµ'},503
+        return {'error':'تعذر جلب الفرص'},503
 
 # External quotes are indicative Yahoo Finance data (unofficial; may be delayed/blocked).
 YAHOO_TICKERS={'BTCUSDT':'BTC-USD','ETHUSDT':'ETH-USD','BNBUSDT':'BNB-USD','SOLUSDT':'SOL-USD','XRPUSDT':'XRP-USD','XAUUSDT':'GC=F','XAGUSDT':'SI=F','CLUSDT':'CL=F','BZUSDT':'BZ=F'}
@@ -982,7 +982,7 @@ def _daily_pnl_from_binance():
     day_start=local_now.replace(hour=0,minute=0,second=0,microsecond=0)
     rows=signed('GET','/fapi/v1/income',{'startTime':int(day_start.timestamp()*1000),
                'endTime':int(local_now.timestamp()*1000),'limit':1000})
-    if len(rows)>=1000: raise ValueError('Ø³Ø¬Ù„ Ø§Ù„ÙŠÙˆÙ… ØªØ¬Ø§ÙˆØ² 1000 Ø¹Ù…Ù„ÙŠØ©Ø› Ø§Ù„Ù†ØªÙŠØ¬Ø© ØºÙŠØ± Ù…ÙƒØªÙ…Ù„Ø©')
+    if len(rows)>=1000: raise ValueError('سجل اليوم تجاوز 1000 عملية؛ النتيجة غير مكتملة')
     totals={'REALIZED_PNL':D('0'),'COMMISSION':D('0'),'FUNDING_FEE':D('0')}
     gains=losses=D('0')
     for row in rows:
@@ -993,7 +993,7 @@ def _daily_pnl_from_binance():
             if amount>0:gains+=amount
             elif amount<0:losses+=amount
     fmt=lambda n:format(n.quantize(D('0.0001')),'f')
-    return {'day':day_start.strftime('%Y-%m-%d')+' (Ø§Ù„ÙƒÙˆÙŠØª)','gains':fmt(gains),
+    return {'day':day_start.strftime('%Y-%m-%d')+' (الكويت)','gains':fmt(gains),
             'losses':fmt(losses),'fees_funding':fmt(totals['COMMISSION']+totals['FUNDING_FEE']),
             'net':fmt(sum(totals.values(),D('0')))}
 
@@ -1041,11 +1041,11 @@ def v37_live_account():
         if row:
             return {'balance':str(row['payload'].get('balance')),
                     'captured_at':row['captured_at'].isoformat(),
-                    'message':'Ø¹Ø±Ø¶ Ø§Ù„Ø±ØµÙŠØ¯ Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø› ÙˆÙ‚Øª ØªØ£ÙƒÙŠØ¯ Binance Ù…ÙˆØ¶Ø­ Ø£Ø¹Ù„Ø§Ù‡ØŒ ÙˆÙ„ÙŠØ³ Ø±ØµÙŠØ¯Ù‹Ø§ Ù„Ø­Ø¸ÙŠÙ‹Ø§'}
-        return {'balance':None,'captured_at':None,'message':'Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø±ØµÙŠØ¯ Ù…Ø¤ÙƒØ¯ Ù…Ø­ÙÙˆØ¸. Ø¨Ø¹Ø¯ Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ø­Ø¸Ø± Ø§Ø³ØªØ®Ø¯Ù… Ø²Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø±ØµÙŠØ¯Ø› Ø§Ù„ØªØ­Ø¯ÙŠØ« Ø§Ù„ØªÙ„Ù‚Ø§Ø¦ÙŠ Ø§Ø®ØªÙŠØ§Ø±ÙŠ Ù…Ù† Render'}
+                    'message':'عرض الرصيد المحفوظ؛ وقت تأكيد Binance موضح أعلاه، وليس رصيدًا لحظيًا'}
+        return {'balance':None,'captured_at':None,'message':'لا يوجد رصيد مؤكد محفوظ. بعد انتهاء الحظر استخدم زر تحديث الرصيد؛ التحديث التلقائي اختياري من Render'}
     except Exception:
         logging.exception('V37 snapshot read failed')
-        return {'error':'ØªØ¹Ø°Ø± Ù‚Ø±Ø§Ø¡Ø© Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ø­Ø³Ø§Ø¨'},503
+        return {'error':'تعذر قراءة بيانات الحساب'},503
 
 @app.route('/api/v34-snapshot-refresh',methods=['POST'])
 @auth
@@ -1054,7 +1054,7 @@ def v34_snapshot_refresh():
         check_csrf()
         _assert_binance_available()
         if not _snapshot_reserve('account',600):
-            flash('ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø­Ø³Ø§Ø¨ Ù…Ø³Ù…ÙˆØ­ Ù…Ø±Ø© ÙƒÙ„ 10 Ø¯Ù‚Ø§Ø¦Ù‚Ø› Ø¢Ø®Ø± Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø© Ù…Ø§ Ø²Ø§Ù„Øª Ø¸Ø§Ù‡Ø±Ø©.')
+            flash('تحديث الحساب مسموح مرة كل 10 دقائق؛ آخر البيانات المحفوظة ما زالت ظاهرة.')
             return redirect(url_for('home'))
         _assert_binance_available()
         account=signed('GET','/fapi/v2/account')
@@ -1062,10 +1062,10 @@ def v34_snapshot_refresh():
         visible=[{k:str(p.get(k,'')) for k in ('symbol','positionAmt','entryPrice','unRealizedProfit')}
                  for p in positions_data if D(str(p.get('positionAmt','0')))!=0]
         _snapshot_put('account',{'balance':str(account['totalWalletBalance']),'positions':visible})
-        flash('ØªÙ… ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø±ØµÙŠØ¯ ÙˆØ§Ù„Ù…Ø±Ø§ÙƒØ² Ù…Ù† Binance ÙˆØ­ÙØ¸ ÙˆÙ‚Øª Ø§Ù„ØªØ­Ø¯ÙŠØ«.')
+        flash('تم تحديث الرصيد والمراكز من Binance وحفظ وقت التحديث.')
     except Exception as e:
         logging.warning('V34 account refresh deferred: %s',str(e)[:180])
-        flash('Ù„Ù… ÙŠØªÙ… ØªØ­Ø¯ÙŠØ« BinanceØ› Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø© Ù…Ø­ÙÙˆØ¸Ø©. '+str(e)[:120])
+        flash('لم يتم تحديث Binance؛ البيانات القديمة محفوظة. '+str(e)[:120])
     return redirect(url_for('home'))
 
 @app.route('/api/v34-pnl-refresh',methods=['POST'])
@@ -1075,14 +1075,14 @@ def v34_pnl_refresh():
         check_csrf()
         _assert_binance_available()
         if not _snapshot_reserve('pnl',900):
-            flash('ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø£Ø±Ø¨Ø§Ø­ Ù…ØªØ§Ø­ ÙƒÙ„ 15 Ø¯Ù‚ÙŠÙ‚Ø©.')
+            flash('تحديث الأرباح متاح كل 15 دقيقة.')
             return redirect(url_for('home'))
         _assert_binance_available()
         _snapshot_put('pnl',_daily_pnl_from_binance())
-        flash('ØªÙ… ØªØ­Ø¯ÙŠØ« Ø£Ø±Ø¨Ø§Ø­ ÙˆØ®Ø³Ø§Ø¦Ø± Ø§Ù„ÙŠÙˆÙ… Ù…Ù† Binance.')
+        flash('تم تحديث أرباح وخسائر اليوم من Binance.')
     except Exception as e:
         logging.warning('V34 PnL refresh deferred: %s',str(e)[:180])
-        flash('Ù„Ù… ÙŠØªÙ… ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø£Ø±Ø¨Ø§Ø­Ø› Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø© Ù…Ø­ÙÙˆØ¸Ø©. '+str(e)[:120])
+        flash('لم يتم تحديث الأرباح؛ البيانات القديمة محفوظة. '+str(e)[:120])
     return redirect(url_for('home'))
 
 @app.route('/api/daily-pnl')
@@ -1090,17 +1090,17 @@ def v34_pnl_refresh():
 def daily_pnl():
     try:
         row=_snapshot_get('pnl')
-        if not row:return {'error':'Ù„Ø§ ØªÙˆØ¬Ø¯ Ù†ØªØ§Ø¦Ø¬ Ù…Ø¤ÙƒØ¯Ø© Ù…Ø­ÙÙˆØ¸Ø© Ø¨Ø¹Ø¯. Ø§Ø³ØªØ®Ø¯Ù… Ø²Ø± ØªØ­Ø¯ÙŠØ« Ø§Ù„Ø£Ø±Ø¨Ø§Ø­ Ù…Ù† Ù„ÙˆØ­Ø© Ø§Ù„Ù…Ø¯ÙŠØ±.'},503
+        if not row:return {'error':'لا توجد نتائج مؤكدة محفوظة بعد. استخدم زر تحديث الأرباح من لوحة المدير.'},503
         data=dict(row['payload'])
         from zoneinfo import ZoneInfo
         if row['captured_at'].astimezone(ZoneInfo('Asia/Kuwait')).date()!=datetime.now(ZoneInfo('Asia/Kuwait')).date():
-            return {'error':'Ù†ØªÙŠØ¬Ø© Ø§Ù„Ø£Ø±Ø¨Ø§Ø­ Ø§Ù„Ù…Ø­ÙÙˆØ¸Ø© ØªØ®Øµ ÙŠÙˆÙ…Ù‹Ø§ Ø³Ø§Ø¨Ù‚Ù‹Ø§Ø› ÙŠÙ„Ø²Ù… ØªØ­Ø¯ÙŠØ«Ù‡Ø§ Ø¨Ø¹Ø¯ Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ø­Ø¸Ø±'},503
+            return {'error':'نتيجة الأرباح المحفوظة تخص يومًا سابقًا؛ يلزم تحديثها بعد انتهاء الحظر'},503
         data['captured_at']=row['captured_at'].isoformat()
         data['stale']=True  # historical snapshot, not a live Binance quote
         return data
     except Exception:
         logging.exception('Snapshot PnL read failed')
-        return {'error':'ØªØ¹Ø°Ø± Ù‚Ø±Ø§Ø¡Ø© Ø¢Ø®Ø± Ù†ØªØ§Ø¦Ø¬ Ù…Ø­ÙÙˆØ¸Ø©'},503
+        return {'error':'تعذر قراءة آخر نتائج محفوظة'},503
 
 
 def init_investors():
@@ -1115,9 +1115,9 @@ def init_investors():
             paid_until TIMESTAMPTZ)""")
 
 INVESTOR_TERMS_VERSION='draft-2026-10-22'
-INVESTOR_TERMS="""Ù‡Ø°Ù‡ Ù†Ø³Ø®Ø© ØªØ¬Ø±ÙŠØ¨ÙŠØ© Ù„Ø¹Ø±Ø¶ Ø§Ù„Ø£Ø³Ø¹Ø§Ø± ÙˆØ¥Ø¯Ø§Ø±Ø© Ø­Ø³Ø§Ø¨ Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ ÙÙ‚Ø·. Ù„Ø§ ÙŠÙˆØ¯Ø¹ Ø§Ù„Ù…Ø³ØªØ®Ø¯Ù… Ø£Ù…ÙˆØ§Ù„Ø§Ù‹ ÙˆÙ„Ø§ ÙŠÙÙˆØ¶ Ø§Ù„Ø¨ÙˆØª Ø¨Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ù†ÙŠØ§Ø¨Ø© Ø¹Ù†Ù‡ Ø¨Ù…ÙˆØ¬Ø¨ Ù‡Ø°Ù‡ Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø©. Ø§Ù„Ø¨Ù†ÙˆØ¯ Ø§Ù„Ù…Ù‚ØªØ±Ø­Ø© Ø¨Ø´Ø£Ù† Ù…Ø´Ø§Ø±ÙƒØ© 50% Ù…Ù† Ø§Ù„Ø£Ø±Ø¨Ø§Ø­ ÙˆØ¥Ø¹Ø§Ø¯Ø© Ø§Ø³ØªØ«Ù…Ø§Ø± Ø±Ø£Ø³ Ø§Ù„Ù…Ø§Ù„ ÙˆÙ…Ù†Ø¹ Ø§Ù„Ø³Ø­Ø¨ ØºÙŠØ± Ù†Ø§ÙØ°Ø© ÙÙŠ Ù‡Ø°Ù‡ Ø§Ù„Ù†Ø³Ø®Ø©ØŒ ÙˆØªØªØ·Ù„Ø¨ Ø§ØªÙØ§Ù‚ÙŠØ© Ù…Ø³ØªÙ‚Ù„Ø© ÙˆÙ…Ø±Ø§Ø¬Ø¹Ø© Ù‚Ø§Ù†ÙˆÙ†ÙŠØ© ÙˆØªØ±Ø®ÙŠØµØ§Ù‹ Ù…Ù„Ø§Ø¦Ù…Ø§Ù‹ Ø­ÙŠØ« ÙŠÙ„Ø²Ù…. Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø®Ø§Ø±Ø¬ÙŠØ© Ø¥Ø±Ø´Ø§Ø¯ÙŠØ© ÙˆÙ‚Ø¯ ØªØªØ£Ø®Ø±. Ø§Ù„Ø§Ø´ØªØ±Ø§ÙƒØ§Øª Ø§Ù„Ù…Ø¯ÙÙˆØ¹Ø© ØºÙŠØ± Ù…ÙØ¹Ù„Ø© Ø­ØªÙ‰ ØªØªØ¶Ø­ Ø§Ù„Ø£Ø³Ø¹Ø§Ø± ÙˆØ´Ø±ÙˆØ· Ø§Ù„Ø¯ÙØ¹ ÙˆØ§Ù„Ø¥Ù„ØºØ§Ø¡ ÙˆØ§Ù„Ø§Ø³ØªØ±Ø¯Ø§Ø¯."""
+INVESTOR_TERMS="""هذه نسخة تجريبية لعرض الأسعار وإدارة حساب الاشتراك فقط. لا يودع المستخدم أموالاً ولا يفوض البوت بالتداول نيابة عنه بموجب هذه الموافقة. البنود المقترحة بشأن مشاركة 50% من الأرباح وإعادة استثمار رأس المال ومنع السحب غير نافذة في هذه النسخة، وتتطلب اتفاقية مستقلة ومراجعة قانونية وترخيصاً ملائماً حيث يلزم. الأسعار الخارجية إرشادية وقد تتأخر. الاشتراكات المدفوعة غير مفعلة حتى تتضح الأسعار وشروط الدفع والإلغاء والاسترداد."""
 
-INVESTOR_PAGE="""<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙˆÙ† | Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ</title>
+INVESTOR_PAGE="""<!doctype html><html lang="ar" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>المستثمرون | البوت الكويتي</title>
 <style>body{font-family:system-ui;background:#101827;color:#f3f6ff;margin:0;padding:20px}main{max-width:820px;margin:auto}article{background:#1d2b40;padding:20px;border-radius:14px;margin:16px 0}input,button{font:inherit;padding:12px;margin:7px 0;max-width:100%;box-sizing:border-box}input{width:100%;border-radius:8px}button{background:#36bb9a;border:0;border-radius:8px;cursor:pointer}table{width:100%;border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #41506a}small{color:#b6c6d9}a{color:#70d9ff}label{display:block;margin:8px 0}.terms{max-height:160px;overflow:auto;background:#101827;padding:12px;border-radius:8px}
 
 /* Automatic daytime/nighttime palette */
@@ -1136,33 +1136,33 @@ html[data-theme="light"] .terms{background:#eef3f9!important;color:#182438}
 </style>
 <script>(function(){
   function hour(){return Number(new Intl.DateTimeFormat('en-GB',{timeZone:'Asia/Kuwait',hour:'2-digit',hourCycle:'h23'}).format(new Date()))}
-  function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='ðŸŽ¨ Ø§Ù„Ù…Ø¸Ù‡Ø±: '+(theme==='light'?'Ù†Ù‡Ø§Ø±ÙŠ':'Ù„ÙŠÙ„ÙŠ')+' (Ø§Ø¶ØºØ· Ù„Ù„ØªØºÙŠÙŠØ±)'}
+  function apply(){let pref;try{pref=localStorage.getItem('alkuwaiti-theme')}catch(e){};let theme=pref==='light'||pref==='dark'?pref:(hour()>=6&&hour()<18?'light':'dark');document.documentElement.dataset.theme=theme;let b=document.getElementById('theme-switch');if(b)b.textContent='🎨 المظهر: '+(theme==='light'?'نهاري':'ليلي')+' (اضغط للتغيير)'}
   window.toggleAlkuwaitiTheme=function(){let theme=document.documentElement.dataset.theme==='light'?'dark':'light';try{localStorage.setItem('alkuwaiti-theme',theme)}catch(e){};apply()};
   apply();document.addEventListener('DOMContentLoaded',apply);setInterval(apply,60000);
-})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">ðŸŽ¨ Ø§Ù„Ù…Ø¸Ù‡Ø±</button><div style='text-align:left'><label>ðŸŒ Language <select id='language' onchange='setLang(this.value)' style='padding:9px;border-radius:8px'><option value='ar'>Ø§Ù„Ø¹Ø±Ø¨ÙŠØ©</option><option value='en'>English</option><option value='fr'>FranÃ§ais</option><option value='es'>EspaÃ±ol</option><option value='hi'>à¤¹à¤¿à¤¨à¥à¤¦à¥€</option><option value='ur'>Ø§Ø±Ø¯Ùˆ</option><option value='tr'>TÃ¼rkÃ§e</option><option value='zh'>ä¸­æ–‡</option><option value='ru'>Ð ÑƒÑÑÐºÐ¸Ð¹</option><option value='pt'>PortuguÃªs</option><option value='de'>Deutsch</option><option value='id'>Bahasa Indonesia</option></select></label></div><h1>ðŸ‡°ðŸ‡¼ Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ â€” Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙˆÙ†</h1><p><small>Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ø¯Ù†Ù‰ Ù„Ù„Ø§Ø³ØªØ«Ù…Ø§Ø± Ø§Ù„Ù…Ù‚ØªØ±Ø­: 50 USDT. Ø§Ù„Ø¥ÙŠØ¯Ø§Ø¹ ÙˆØ¥Ø¯Ø§Ø±Ø© Ø§Ù„Ø£Ù…ÙˆØ§Ù„ ØºÙŠØ± Ù…ÙØ¹Ù„ÙŠÙ†.</small></p>
+})();</script><main><button id="theme-switch" type="button" class="theme-switch" onclick="toggleAlkuwaitiTheme()">🎨 المظهر</button><div style='text-align:left'><label>🌐 Language <select id='language' onchange='setLang(this.value)' style='padding:9px;border-radius:8px'><option value='ar'>العربية</option><option value='en'>English</option><option value='fr'>Français</option><option value='es'>Español</option><option value='hi'>हिन्दी</option><option value='ur'>اردو</option><option value='tr'>Türkçe</option><option value='zh'>中文</option><option value='ru'>Русский</option><option value='pt'>Português</option><option value='de'>Deutsch</option><option value='id'>Bahasa Indonesia</option></select></label></div><h1>🇰🇼 البوت الكويتي — المستثمرون</h1><p><small>الحد الأدنى للاستثمار المقترح: 50 USDT. الإيداع وإدارة الأموال غير مفعلين.</small></p>
 {% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
-{% if user %}<article><h2>Ø­Ø³Ø§Ø¨Ùƒ</h2><p>{{user.email}}</p><p>Ø­Ø§Ù„Ø© Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ: {{user.subscription_status}}</p><p>Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„ØªØ¬Ø±Ø¨Ø©: {{user.trial_end}}</p><p>Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ Ø§Ù„Ù…Ø¯ÙÙˆØ¹: {{user.paid_until or 'ØºÙŠØ± Ù…ÙØ¹Ù„'}}</p><p><small>Ù„Ø§ ØªÙˆØ¬Ø¯ Ù…Ø­ÙØ¸Ø© Ø¥ÙŠØ¯Ø§Ø¹ Ø£Ùˆ Ø³Ø­Ø¨ Ø£Ùˆ ØªÙ†ÙÙŠØ° ØªØ¯Ø§ÙˆÙ„ ÙÙŠ Ø­Ø³Ø§Ø¨ Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±.</small></p><p><a href='/investors/requests'>Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ ÙˆÙ…Ø¨Ø§Ù„Øº Ø§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±</a></p><a href="{{url_for('investor_logout')}}" class="logout-link">ðŸšª ØªØ³Ø¬ÙŠÙ„ Ø®Ø±ÙˆØ¬ Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</a></article>
-<article><h2>Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø£Ø³ÙˆØ§Ù‚</h2><small>Ù…Ù† Yahoo Finance ØºÙŠØ± Ø§Ù„Ø±Ø³Ù…ÙŠØ› Ù‚Ø¯ ØªØªØ£Ø®Ø± Ø§Ù„Ø£Ø³Ø¹Ø§Ø± Ø£Ùˆ ØªÙƒÙˆÙ† ØºÙŠØ± Ù…ØªØ§Ø­Ø©. ØªØªØ­Ø¯Ø« Ø§Ù„Ø´Ø§Ø´Ø© ÙƒÙ„ Ø«Ø§Ù†ÙŠØ© ÙˆØ§Ù„Ù…ØµØ¯Ø± Ù†Ø­Ùˆ ÙƒÙ„ 30 Ø«Ø§Ù†ÙŠØ©.</small><table><thead><tr><th>Ø§Ù„Ø³ÙˆÙ‚</th><th>Ø§Ù„Ø³Ø¹Ø± Ø§Ù„Ø¥Ø±Ø´Ø§Ø¯ÙŠ</th><th>ÙˆÙ‚Øª Ø§Ù„Ù…ØµØ¯Ø±</th></tr></thead><tbody id="prices"><tr><td colspan="3">Ø¬Ø§Ø±ÙŠ Ø§Ù„ØªØ­Ù…ÙŠÙ„...</td></tr></tbody></table></article>
-{% else %}<article><h2>Ø¥Ù†Ø´Ø§Ø¡ Ø­Ø³Ø§Ø¨ Ø¬Ø¯ÙŠØ¯</h2><form method="post" action="{{url_for('investor_register')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>Ø§Ù„Ø¨Ø±ÙŠØ¯ Ø§Ù„Ø¥Ù„ÙƒØªØ±ÙˆÙ†ÙŠ<input type="email" name="email" autocomplete="email" required maxlength="254"></label><label>ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± (12 Ø­Ø±ÙØ§Ù‹ Ø¹Ù„Ù‰ Ø§Ù„Ø£Ù‚Ù„)<input type="password" name="password" autocomplete="new-password" minlength="12" required></label><div class="terms">{{terms}}</div><label><input style="width:auto" type="checkbox" name="accept" value="yes" required> Ù‚Ø±Ø£Øª ÙˆÙˆØ§ÙÙ‚Øª Ø¹Ù„Ù‰ Ø´Ø±ÙˆØ· Ø§Ù„Ù†Ø³Ø®Ø© Ø§Ù„ØªØ¬Ø±ÙŠØ¨ÙŠØ© Ø£Ø¹Ù„Ø§Ù‡</label><button>ØªØ³Ø¬ÙŠÙ„ ÙˆØ¨Ø¯Ø¡ 7 Ø£ÙŠØ§Ù… ØªØ¬Ø±ÙŠØ¨ÙŠØ©</button></form></article>
-<article><h2>ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¯Ø®ÙˆÙ„</h2><form method="post" action="{{url_for('investor_login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="Ø§Ù„Ø¨Ø±ÙŠØ¯ Ø§Ù„Ø¥Ù„ÙƒØªØ±ÙˆÙ†ÙŠ" required><input type="password" name="password" placeholder="ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±" required><button>Ø¯Ø®ÙˆÙ„</button></form><p><a href="{{url_for('investor_forgot')}}">Ù†Ø³ÙŠØª ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±ØŸ / Forgot password?</a></p></article>{% endif %}
-<article style="border:1px solid #577b9e"><h2>ðŸ” Ø¯Ø®ÙˆÙ„ Ù…Ø³Ø¤ÙˆÙ„ Ø§Ù„Ø¨ÙˆØª</h2><p><small>Ù‡Ø°Ù‡ Ø§Ù„Ø®Ø§Ù†Ø© Ø®Ø§ØµØ© Ø¨Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„ ÙÙ‚Ø·. Ù„Ø§ ØªØ³ØªØ®Ø¯Ù… Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± Ù„Ù„Ø¯Ø®ÙˆÙ„ Ø¥Ù„Ù‰ Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©.</small></p>
-{% if admin_logged %}<p>Ø£Ù†Øª Ù…Ø³Ø¬Ù„ Ø¯Ø®ÙˆÙ„Ùƒ ÙƒÙ…Ø³Ø¤ÙˆÙ„.</p><p><a href="{{url_for('logout')}}" class="logout-link">ðŸšª ØªØ³Ø¬ÙŠÙ„ Ø®Ø±ÙˆØ¬ Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„</a></p><p><a href="{{url_for('home')}}">Ù„ÙˆØ­Ø© Ø§Ù„ØªØ¯Ø§ÙˆÙ„</a> | <a href="{{url_for('owner_investors')}}">Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a> | <a href="{{url_for('owner_requests_page')}}">Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø§Øª</a></p>
-{% else %}<form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>Ø¨Ø±ÙŠØ¯ Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„<input type="email" name="email" autocomplete="username" required></label><label>ÙƒÙ„Ù…Ø© Ù…Ø±ÙˆØ± Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Ø§Ù„Ø¯Ø®ÙˆÙ„ Ø¥Ù„Ù‰ Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©</button></form>{% endif %}</article>
-<article><h2>Ø§Ù„Ø¹Ø±ÙˆØ¶ Ø§Ù„Ù…Ù‚ØªØ±Ø­Ø© â€” Ø§Ù„Ø¯ÙØ¹ ØºÙŠØ± Ù…ÙØ¹Ù„</h2><table><tr><th>Ø§Ù„Ø¹Ø±Ø¶</th><th>Ø§Ù„Ø³Ø¹Ø± Ø§Ù„Ù…Ø¨Ø¯Ø¦ÙŠ</th></tr><tr><td>7 Ø£ÙŠØ§Ù… ØªØ¬Ø±Ø¨Ø©</td><td>Ù…Ø¬Ø§Ù†Ø§Ù‹</td></tr><tr><td>Ø£Ø³Ø¨ÙˆØ¹</td><td>19.99$</td></tr><tr><td>3 Ø£Ø³Ø§Ø¨ÙŠØ¹ + Ø§Ù„Ø±Ø§Ø¨Ø¹ Ù…Ø¬Ø§Ù†Ø§Ù‹</td><td>ÙŠØ­ØªØ§Ø¬ ØªØ£ÙƒÙŠØ¯ Ø·Ø±ÙŠÙ‚Ø© Ø§Ù„Ø­Ø³Ø§Ø¨</td></tr><tr><td>3 Ø£Ø´Ù‡Ø± + Ø§Ù„Ø±Ø§Ø¨Ø¹ Ù…Ø¬Ø§Ù†Ø§Ù‹</td><td>49.99$ â€” ÙŠØ­ØªØ§Ø¬ ØªØ£ÙƒÙŠØ¯ Ù‡Ù„ Ø§Ù„Ø³Ø¹Ø± Ø´Ù‡Ø±ÙŠ Ø£Ù… Ø¥Ø¬Ù…Ø§Ù„ÙŠ</td></tr><tr><td>Ø¹Ø§Ù… + Ø´Ù‡Ø±Ø§Ù† Ù…Ø¬Ø§Ù†Ø§Ù‹</td><td>99.99$ â€” ÙŠØ­ØªØ§Ø¬ ØªØ£ÙƒÙŠØ¯ Ù‡Ù„ Ø§Ù„Ø³Ø¹Ø± Ø³Ù†ÙˆÙŠ</td></tr></table><p><small>Ø®ØµÙ… Ù†Ù‡Ø§ÙŠØ© Ø§Ù„Ø£Ø³Ø¨ÙˆØ¹ Ø§Ù„Ù…Ù‚ØªØ±Ø­: 10%ØŒ Ù„Ù… ÙŠÙÙØ¹Ù‘Ù„ Ù„Ø¹Ø¯Ù… ÙˆØ¬ÙˆØ¯ Ø¯ÙØ¹ Ø¨Ø¹Ø¯.</small></p></article></main>
-{% if user %}<script>const markets=[['Ø¨ÙŠØªÙƒÙˆÙŠÙ†','BTCUSDT'],['Ø¥ÙŠØ«Ø±ÙŠÙˆÙ…','ETHUSDT'],['BNB','BNBUSDT'],['Ø³ÙˆÙ„Ø§Ù†Ø§','SOLUSDT'],['XRP','XRPUSDT'],['Ø§Ù„Ø°Ù‡Ø¨','XAUUSDT'],['Ø§Ù„ÙØ¶Ø©','XAGUSDT'],['WTI','CLUSDT'],['Ø¨Ø±Ù†Øª','BZUSDT']];async function prices(){if(document.hidden)return;try{const r=await fetch('/api/market-prices',{cache:'no-store'});if(!r.ok)throw Error('network');const d=await r.json(),body=document.getElementById('prices');body.replaceChildren();for(const [name,sym] of markets){const tr=document.createElement('tr'),p=d.prices[sym];for(const value of [name,p&&p.price!=null?Number(p.price).toLocaleString('en-US',{maximumFractionDigits:6}):'ØºÙŠØ± Ù…ØªØ§Ø­',p&&p.asof?new Date(p.asof).toLocaleTimeString('ar-KW'):'â€”']){const td=document.createElement('td');td.textContent=value;tr.appendChild(td)}body.appendChild(tr)}}catch(e){}}prices();setInterval(prices,1000)</script>{% endif %}<script>
+{% if user %}<article><h2>حسابك</h2><p>{{user.email}}</p><p>حالة الاشتراك: {{user.subscription_status}}</p><p>انتهاء التجربة: {{user.trial_end}}</p><p>انتهاء الاشتراك المدفوع: {{user.paid_until or 'غير مفعل'}}</p><p><small>لا توجد محفظة إيداع أو سحب أو تنفيذ تداول في حساب المستثمر.</small></p><p><a href='/investors/requests'>طلبات الاشتراك ومبالغ الاستثمار</a></p><a href="{{url_for('investor_logout')}}" class="logout-link">🚪 تسجيل خروج المستثمر</a></article>
+<article><h2>أسعار الأسواق</h2><small>من Yahoo Finance غير الرسمي؛ قد تتأخر الأسعار أو تكون غير متاحة. تتحدث الشاشة كل ثانية والمصدر نحو كل 30 ثانية.</small><table><thead><tr><th>السوق</th><th>السعر الإرشادي</th><th>وقت المصدر</th></tr></thead><tbody id="prices"><tr><td colspan="3">جاري التحميل...</td></tr></tbody></table></article>
+{% else %}<article><h2>إنشاء حساب جديد</h2><form method="post" action="{{url_for('investor_register')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>البريد الإلكتروني<input type="email" name="email" autocomplete="email" required maxlength="254"></label><label>كلمة المرور (12 حرفاً على الأقل)<input type="password" name="password" autocomplete="new-password" minlength="12" required></label><div class="terms">{{terms}}</div><label><input style="width:auto" type="checkbox" name="accept" value="yes" required> قرأت ووافقت على شروط النسخة التجريبية أعلاه</label><button>تسجيل وبدء 7 أيام تجريبية</button></form></article>
+<article><h2>تسجيل الدخول</h2><form method="post" action="{{url_for('investor_login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><input type="email" name="email" placeholder="البريد الإلكتروني" required><input type="password" name="password" placeholder="كلمة المرور" required><button>دخول</button></form><p><a href="{{url_for('investor_forgot')}}">نسيت كلمة المرور؟ / Forgot password?</a></p></article>{% endif %}
+<article style="border:1px solid #577b9e"><h2>🔐 دخول مسؤول البوت</h2><p><small>هذه الخانة خاصة بالمسؤول فقط. لا تستخدم بيانات المستثمر للدخول إلى الإدارة.</small></p>
+{% if admin_logged %}<p>أنت مسجل دخولك كمسؤول.</p><p><a href="{{url_for('logout')}}" class="logout-link">🚪 تسجيل خروج المسؤول</a></p><p><a href="{{url_for('home')}}">لوحة التداول</a> | <a href="{{url_for('owner_investors')}}">إدارة المستثمرين</a> | <a href="{{url_for('owner_requests_page')}}">الموافقات</a></p>
+{% else %}<form method="post" action="{{url_for('login')}}"><input type="hidden" name="csrf" value="{{csrf}}"><label>بريد المسؤول<input type="email" name="email" autocomplete="username" required></label><label>كلمة مرور المسؤول<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">الدخول إلى الإدارة</button></form>{% endif %}</article>
+<article><h2>العروض المقترحة — الدفع غير مفعل</h2><table><tr><th>العرض</th><th>السعر المبدئي</th></tr><tr><td>7 أيام تجربة</td><td>مجاناً</td></tr><tr><td>أسبوع</td><td>19.99$</td></tr><tr><td>3 أسابيع + الرابع مجاناً</td><td>يحتاج تأكيد طريقة الحساب</td></tr><tr><td>3 أشهر + الرابع مجاناً</td><td>49.99$ — يحتاج تأكيد هل السعر شهري أم إجمالي</td></tr><tr><td>عام + شهران مجاناً</td><td>99.99$ — يحتاج تأكيد هل السعر سنوي</td></tr></table><p><small>خصم نهاية الأسبوع المقترح: 10%، لم يُفعّل لعدم وجود دفع بعد.</small></p></article></main>
+{% if user %}<script>const markets=[['بيتكوين','BTCUSDT'],['إيثريوم','ETHUSDT'],['BNB','BNBUSDT'],['سولانا','SOLUSDT'],['XRP','XRPUSDT'],['الذهب','XAUUSDT'],['الفضة','XAGUSDT'],['WTI','CLUSDT'],['برنت','BZUSDT']];async function prices(){if(document.hidden)return;try{const r=await fetch('/api/market-prices',{cache:'no-store'});if(!r.ok)throw Error('network');const d=await r.json(),body=document.getElementById('prices');body.replaceChildren();for(const [name,sym] of markets){const tr=document.createElement('tr'),p=d.prices[sym];for(const value of [name,p&&p.price!=null?Number(p.price).toLocaleString('en-US',{maximumFractionDigits:6}):'غير متاح',p&&p.asof?new Date(p.asof).toLocaleTimeString('ar-KW'):'—']){const td=document.createElement('td');td.textContent=value;tr.appendChild(td)}body.appendChild(tr)}}catch(e){}}prices();setInterval(prices,1000)</script>{% endif %}<script>
 const labels={
- en:['Kuwaiti Bot â€” Investors','Create a new account','Sign in','Email','Password','Login','Forgot password?','Market prices','Subscription offers'],
- fr:['Bot KoweÃ¯tien â€” Investisseurs','CrÃ©er un compte','Connexion','E-mail','Mot de passe','Connexion','Mot de passe oubliÃ© ?','Prix des marchÃ©s','Offres dâ€™abonnement'],
- es:['Bot KuwaitÃ­ â€” Inversores','Crear cuenta','Iniciar sesiÃ³n','Correo','ContraseÃ±a','Entrar','Â¿OlvidÃ³ su contraseÃ±a?','Precios de mercado','Ofertas de suscripciÃ³n'],
- hi:['à¤•à¥à¤µà¥ˆà¤¤à¥€ à¤¬à¥‰à¤Ÿ â€” à¤¨à¤¿à¤µà¥‡à¤¶à¤•','à¤¨à¤¯à¤¾ à¤–à¤¾à¤¤à¤¾','à¤²à¥‰à¤— à¤‡à¤¨','à¤ˆà¤®à¥‡à¤²','à¤ªà¤¾à¤¸à¤µà¤°à¥à¤¡','à¤²à¥‰à¤— à¤‡à¤¨','à¤ªà¤¾à¤¸à¤µà¤°à¥à¤¡ à¤­à¥‚à¤² à¤—à¤?','à¤¬à¤¾à¤œà¤¾à¤° à¤­à¤¾à¤µ','à¤¸à¤¦à¤¸à¥à¤¯à¤¤à¤¾'],
- ur:['Ú©ÙˆÛŒØªÛŒ Ø¨ÙˆÙ¹ â€” Ø³Ø±Ù…Ø§ÛŒÛ Ú©Ø§Ø±','Ù†ÛŒØ§ Ø§Ú©Ø§Ø¤Ù†Ù¹','Ù„Ø§Ú¯ Ø§Ù†','Ø§ÛŒ Ù…ÛŒÙ„','Ù¾Ø§Ø³ ÙˆØ±Úˆ','Ø¯Ø§Ø®Ù„ ÛÙˆÚº','Ù¾Ø§Ø³ ÙˆØ±Úˆ Ø¨Ú¾ÙˆÙ„ Ú¯Ø¦Û’ØŸ','Ù…Ø§Ø±Ú©ÛŒÙ¹ Ù‚ÛŒÙ…ØªÛŒÚº','Ø³Ø¨Ø³Ú©Ø±Ù¾Ø´Ù†'],
- tr:['Kuveyt Botu â€” YatÄ±rÄ±mcÄ±lar','Yeni hesap','GiriÅŸ','E-posta','Åžifre','GiriÅŸ','Åžifremi unuttum','Piyasa fiyatlarÄ±','Abonelikler'],
- zh:['ç§‘å¨ç‰¹æœºå™¨äºº â€” æŠ•èµ„è€…','åˆ›å»ºè´¦æˆ·','ç™»å½•','ç”µå­é‚®ä»¶','å¯†ç ','ç™»å½•','å¿˜è®°å¯†ç ï¼Ÿ','å¸‚åœºä»·æ ¼','è®¢é˜…æ–¹æ¡ˆ'],
- ru:['ÐšÑƒÐ²ÐµÐ¹Ñ‚ÑÐºÐ¸Ð¹ Ð±Ð¾Ñ‚ â€” Ð˜Ð½Ð²ÐµÑÑ‚Ð¾Ñ€Ñ‹','Ð¡Ð¾Ð·Ð´Ð°Ñ‚ÑŒ Ð°ÐºÐºÐ°ÑƒÐ½Ñ‚','Ð’Ð¾Ð¹Ñ‚Ð¸','ÐŸÐ¾Ñ‡Ñ‚Ð°','ÐŸÐ°Ñ€Ð¾Ð»ÑŒ','Ð’Ð¾Ð¹Ñ‚Ð¸','Ð—Ð°Ð±Ñ‹Ð»Ð¸ Ð¿Ð°Ñ€Ð¾Ð»ÑŒ?','Ð¦ÐµÐ½Ñ‹ Ñ€Ñ‹Ð½ÐºÐ¾Ð²','ÐŸÐ¾Ð´Ð¿Ð¸ÑÐºÐ¸'],
- pt:['Bot Kuwaitiano â€” Investidores','Criar conta','Entrar','E-mail','Senha','Entrar','Esqueceu a senha?','PreÃ§os de mercado','Planos'],
- de:['Kuwait-Bot â€” Anleger','Konto erstellen','Anmelden','E-Mail','Passwort','Anmelden','Passwort vergessen?','Marktpreise','Abonnements'],
- id:['Bot Kuwait â€” Investor','Buat akun','Masuk','Email','Kata sandi','Masuk','Lupa kata sandi?','Harga pasar','Langganan']};
-const originals=['Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ â€” Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙˆÙ†','Ø¥Ù†Ø´Ø§Ø¡ Ø­Ø³Ø§Ø¨ Ø¬Ø¯ÙŠØ¯','ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¯Ø®ÙˆÙ„','Ø§Ù„Ø¨Ø±ÙŠØ¯ Ø§Ù„Ø¥Ù„ÙƒØªØ±ÙˆÙ†ÙŠ','ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±','Ø¯Ø®ÙˆÙ„','Ù†Ø³ÙŠØª ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±ØŸ','Ø£Ø³Ø¹Ø§Ø± Ø§Ù„Ø£Ø³ÙˆØ§Ù‚','Ø§Ù„Ø¹Ø±ÙˆØ¶ Ø§Ù„Ù…Ù‚ØªØ±Ø­Ø©'];
+ en:['Kuwaiti Bot — Investors','Create a new account','Sign in','Email','Password','Login','Forgot password?','Market prices','Subscription offers'],
+ fr:['Bot Koweïtien — Investisseurs','Créer un compte','Connexion','E-mail','Mot de passe','Connexion','Mot de passe oublié ?','Prix des marchés','Offres d’abonnement'],
+ es:['Bot Kuwaití — Inversores','Crear cuenta','Iniciar sesión','Correo','Contraseña','Entrar','¿Olvidó su contraseña?','Precios de mercado','Ofertas de suscripción'],
+ hi:['कुवैती बॉट — निवेशक','नया खाता','लॉग इन','ईमेल','पासवर्ड','लॉग इन','पासवर्ड भूल गए?','बाजार भाव','सदस्यता'],
+ ur:['کویتی بوٹ — سرمایہ کار','نیا اکاؤنٹ','لاگ ان','ای میل','پاس ورڈ','داخل ہوں','پاس ورڈ بھول گئے؟','مارکیٹ قیمتیں','سبسکرپشن'],
+ tr:['Kuveyt Botu — Yatırımcılar','Yeni hesap','Giriş','E-posta','Şifre','Giriş','Şifremi unuttum','Piyasa fiyatları','Abonelikler'],
+ zh:['科威特机器人 — 投资者','创建账户','登录','电子邮件','密码','登录','忘记密码？','市场价格','订阅方案'],
+ ru:['Кувейтский бот — Инвесторы','Создать аккаунт','Войти','Почта','Пароль','Войти','Забыли пароль?','Цены рынков','Подписки'],
+ pt:['Bot Kuwaitiano — Investidores','Criar conta','Entrar','E-mail','Senha','Entrar','Esqueceu a senha?','Preços de mercado','Planos'],
+ de:['Kuwait-Bot — Anleger','Konto erstellen','Anmelden','E-Mail','Passwort','Anmelden','Passwort vergessen?','Marktpreise','Abonnements'],
+ id:['Bot Kuwait — Investor','Buat akun','Masuk','Email','Kata sandi','Masuk','Lupa kata sandi?','Harga pasar','Langganan']};
+const originals=['البوت الكويتي — المستثمرون','إنشاء حساب جديد','تسجيل الدخول','البريد الإلكتروني','كلمة المرور','دخول','نسيت كلمة المرور؟','أسعار الأسواق','العروض المقترحة'];
 function setLang(lang){localStorage.setItem('investor_lang',lang);document.documentElement.lang=lang;document.documentElement.dir=['ar','ur'].includes(lang)?'rtl':'ltr';const dict=labels[lang];if(!dict)return;document.querySelectorAll('h1,h2,label,button,a').forEach(el=>{if(el.children.length>0 && el.tagName!=='A')return;let text=el.textContent.trim();for(let i=0;i<originals.length;i++)if(text.includes(originals[i])){el.textContent=text.replace(originals[i],dict[i]);break;}})}
 try{const lang=localStorage.getItem('investor_lang')||((navigator.language||'ar').split('-')[0]);document.getElementById('language').value=labels[lang]?lang:'ar';setLang(lang)}catch(e){}
 </script></html>"""
@@ -1180,25 +1180,25 @@ def investors():
                 session.pop('investor_id', None)
         except Exception:
             logging.exception('Investor profile unavailable')
-            flash('ØªØ¹Ø°Ø± ØªØ­Ù…ÙŠÙ„ Ø­Ø³Ø§Ø¨ Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± Ù…Ø¤Ù‚ØªØ§Ù‹. ÙŠØ±Ø¬Ù‰ Ø§Ù„Ù…Ø­Ø§ÙˆÙ„Ø© Ù„Ø§Ø­Ù‚Ø§Ù‹.')
+            flash('تعذر تحميل حساب المستثمر مؤقتاً. يرجى المحاولة لاحقاً.')
     return render_template_string(INVESTOR_PAGE,user=user,csrf=csrf(),terms=INVESTOR_TERMS,admin_logged=bool(session.get('admin')))
 
 @app.route('/investors/register',methods=['POST'])
 def investor_register():
     try:
         check_csrf()
-        if request.form.get('accept')!='yes':raise ValueError('ÙŠØ¬Ø¨ Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø© Ø¹Ù„Ù‰ Ø´Ø±ÙˆØ· Ø§Ù„ØªØ¬Ø±Ø¨Ø©')
+        if request.form.get('accept')!='yes':raise ValueError('يجب الموافقة على شروط التجربة')
         email=request.form.get('email','').strip().lower();pw=request.form.get('password','')
-        if '@' not in email or len(email)>254 or len(pw)<12 or len(pw)>256:raise ValueError('ØªØ­Ù‚Ù‚ Ù…Ù† Ø§Ù„Ø¨Ø±ÙŠØ¯ ÙˆÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± (12 Ø­Ø±ÙØ§Ù‹ Ø¹Ù„Ù‰ Ø§Ù„Ø£Ù‚Ù„)')
+        if '@' not in email or len(email)>254 or len(pw)<12 or len(pw)>256:raise ValueError('تحقق من البريد وكلمة المرور (12 حرفاً على الأقل)')
         init_investors()
         with db() as conn,conn.cursor() as c:
             c.execute('INSERT INTO investor_accounts(email,password_hash,accepted_terms_version) VALUES(%s,%s,%s) RETURNING id',(email,generate_password_hash(pw),INVESTOR_TERMS_VERSION))
             uid=c.fetchone()[0]
         session.clear();session['investor_id']=uid;session.permanent=True;csrf()
-        flash('ØªÙ… Ø¥Ù†Ø´Ø§Ø¡ Ø­Ø³Ø§Ø¨ Ø§Ù„Ø¹Ø±Ø¶ Ø§Ù„ØªØ¬Ø±ÙŠØ¨ÙŠ')
+        flash('تم إنشاء حساب العرض التجريبي')
     except psycopg2.errors.UniqueViolation:
-        flash('Ø§Ù„Ø¨Ø±ÙŠØ¯ Ù…Ø³Ø¬Ù„ Ø¨Ø§Ù„ÙØ¹Ù„')
-    except Exception as e:flash('ØªØ¹Ø°Ø± Ø§Ù„ØªØ³Ø¬ÙŠÙ„: '+str(e)[:140])
+        flash('البريد مسجل بالفعل')
+    except Exception as e:flash('تعذر التسجيل: '+str(e)[:140])
     return redirect(url_for('investors'))
 
 @app.route('/investors/login',methods=['POST'])
@@ -1208,7 +1208,7 @@ def investor_login():
         with db() as conn,conn.cursor() as c:
             c.execute('SELECT id,password_hash FROM investor_accounts WHERE email=%s',(request.form.get('email','').strip().lower(),))
             row=c.fetchone()
-        if not row or not check_password_hash(row[1],request.form.get('password','')):raise ValueError('Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ø¯Ø®ÙˆÙ„ ØºÙŠØ± ØµØ­ÙŠØ­Ø©')
+        if not row or not check_password_hash(row[1],request.form.get('password','')):raise ValueError('بيانات الدخول غير صحيحة')
         session.clear();session['investor_id']=row[0];session.permanent=True;csrf()
     except Exception as e:flash(str(e)[:140])
     return redirect(url_for('investors'))
@@ -1227,7 +1227,7 @@ def init_password_resets():
             used_at TIMESTAMPTZ)""")
         c.execute('CREATE INDEX IF NOT EXISTS idx_password_resets_user_time ON investor_password_resets(investor_id,created_at DESC)')
 
-RESET_PAGE="""<!doctype html><html lang='ar' dir='rtl'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Ø§Ø³ØªØ¹Ø§Ø¯Ø© ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±</title><style>body{background:#101827;color:white;font:16px system-ui;padding:20px}main{max-width:520px;margin:auto}article{background:#1d2b40;padding:24px;border-radius:14px}input,button{box-sizing:border-box;width:100%;padding:13px;margin:8px 0;border-radius:8px}button{background:#36bb9a;border:0}a{color:#70d9ff}</style><main><article><h1>{{heading}}</h1><p>{{help}}</p>{% for m in get_flashed_messages() %}<p>{{m}}</p>{% endfor %}<form method='post'><input type='hidden' name='csrf' value='{{csrf}}'>{% if token %}<input type='hidden' name='token' value='{{token}}'><label>ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø© (12 Ø­Ø±ÙÙ‹Ø§ Ø¹Ù„Ù‰ Ø§Ù„Ø£Ù‚Ù„)</label><input name='password' type='password' minlength='12' maxlength='256' autocomplete='new-password' required><label>ØªØ£ÙƒÙŠØ¯ ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±</label><input name='confirm' type='password' minlength='12' maxlength='256' autocomplete='new-password' required>{% else %}<label>Ø§Ù„Ø¨Ø±ÙŠØ¯ Ø§Ù„Ø¥Ù„ÙƒØªØ±ÙˆÙ†ÙŠ Ø§Ù„Ù…Ø³Ø¬Ù„</label><input name='email' type='email' required maxlength='254' autocomplete='email'>{% endif %}<button>{{'ØªØºÙŠÙŠØ± ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±' if token else 'Ø¥Ø±Ø³Ø§Ù„ Ø±Ø§Ø¨Ø· Ø§Ù„Ø§Ø³ØªØ¹Ø§Ø¯Ø©'}}</button></form><a href='/investors'>Ø§Ù„Ø¹ÙˆØ¯Ø© Ù„Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a></article></main></html>"""
+RESET_PAGE="""<!doctype html><html lang='ar' dir='rtl'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>استعادة كلمة المرور</title><style>body{background:#101827;color:white;font:16px system-ui;padding:20px}main{max-width:520px;margin:auto}article{background:#1d2b40;padding:24px;border-radius:14px}input,button{box-sizing:border-box;width:100%;padding:13px;margin:8px 0;border-radius:8px}button{background:#36bb9a;border:0}a{color:#70d9ff}</style><main><article><h1>{{heading}}</h1><p>{{help}}</p>{% for m in get_flashed_messages() %}<p>{{m}}</p>{% endfor %}<form method='post'><input type='hidden' name='csrf' value='{{csrf}}'>{% if token %}<input type='hidden' name='token' value='{{token}}'><label>كلمة المرور الجديدة (12 حرفًا على الأقل)</label><input name='password' type='password' minlength='12' maxlength='256' autocomplete='new-password' required><label>تأكيد كلمة المرور</label><input name='confirm' type='password' minlength='12' maxlength='256' autocomplete='new-password' required>{% else %}<label>البريد الإلكتروني المسجل</label><input name='email' type='email' required maxlength='254' autocomplete='email'>{% endif %}<button>{{'تغيير كلمة المرور' if token else 'إرسال رابط الاستعادة'}}</button></form><a href='/investors'>العودة للمستثمرين</a></article></main></html>"""
 
 def send_reset_mail(email,token):
     host=os.environ.get('SMTP_HOST','');user=os.environ.get('SMTP_USER','')
@@ -1237,9 +1237,9 @@ def send_reset_mail(email,token):
         return False
     from urllib.parse import quote
     url=url_for('investor_reset',token=token,_external=True)
-    msg=EmailMessage();msg['Subject']='Alkuwaiti Bot - Password reset / Ø§Ø³ØªØ¹Ø§Ø¯Ø© ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±'
+    msg=EmailMessage();msg['Subject']='Alkuwaiti Bot - Password reset / استعادة كلمة المرور'
     msg['From']=sender;msg['To']=email
-    msg.set_content('Ø±Ø§Ø¨Ø· ØªØºÙŠÙŠØ± ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± ØµØ§Ù„Ø­ Ù„Ù…Ø¯Ø© 20 Ø¯Ù‚ÙŠÙ‚Ø© ÙˆÙŠØ³ØªØ®Ø¯Ù… Ù…Ø±Ø© ÙˆØ§Ø­Ø¯Ø© ÙÙ‚Ø·:\n'+url+'\n\nIf you did not request this, ignore this email.')
+    msg.set_content('رابط تغيير كلمة المرور صالح لمدة 20 دقيقة ويستخدم مرة واحدة فقط:\n'+url+'\n\nIf you did not request this, ignore this email.')
     port=int(os.environ.get('SMTP_PORT','465'))
     if port==465:
         with smtplib.SMTP_SSL(host,port,timeout=10,context=ssl.create_default_context()) as smtp:
@@ -1272,32 +1272,32 @@ def investor_forgot():
                             try:send_reset_mail(email,token)
                             except Exception:app.logger.exception('SMTP reset delivery failed')
             except Exception:app.logger.exception('Password reset request failed')
-        flash('Ø¥Ø°Ø§ ÙƒØ§Ù† Ø§Ù„Ø¨Ø±ÙŠØ¯ Ù…Ø³Ø¬Ù„Ø§Ù‹ ÙˆØ®Ø¯Ù…Ø© Ø§Ù„Ø¨Ø±ÙŠØ¯ Ù…ÙØ¹Ù„Ø©ØŒ Ø³ÙŠØµÙ„Ùƒ Ø±Ø§Ø¨Ø· Ø§Ù„Ø§Ø³ØªØ¹Ø§Ø¯Ø©. Ø±Ø§Ø¬Ø¹ Ø§Ù„Ø±Ø³Ø§Ø¦Ù„ ØºÙŠØ± Ø§Ù„Ù…Ø±ØºÙˆØ¨Ø©.')
+        flash('إذا كان البريد مسجلاً وخدمة البريد مفعلة، سيصلك رابط الاستعادة. راجع الرسائل غير المرغوبة.')
         return redirect(url_for('investor_forgot'))
-    return render_template_string(RESET_PAGE,heading='Ù†Ø³ÙŠØª ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±ØŸ',help='Ø£Ø¯Ø®Ù„ Ø¨Ø±ÙŠØ¯Ùƒ Ù„Ø¥Ø±Ø³Ø§Ù„ Ø±Ø§Ø¨Ø· Ø§Ø³ØªØ¹Ø§Ø¯Ø© ØµØ§Ù„Ø­ Ù„Ù…Ø¯Ø© 20 Ø¯Ù‚ÙŠÙ‚Ø©.',csrf=csrf(),token=None)
+    return render_template_string(RESET_PAGE,heading='نسيت كلمة المرور؟',help='أدخل بريدك لإرسال رابط استعادة صالح لمدة 20 دقيقة.',csrf=csrf(),token=None)
 
 @app.route('/investors/reset-password/<token>',methods=['GET','POST'])
 def investor_reset(token):
-    if len(token)>100 or len(token)<30:return 'Ø±Ø§Ø¨Ø· ØºÙŠØ± ØµØ§Ù„Ø­',400
+    if len(token)>100 or len(token)<30:return 'رابط غير صالح',400
     digest=hashlib.sha256(token.encode()).hexdigest()
     if request.method=='POST':
         check_csrf()
         pw=request.form.get('password','')
         if len(pw)<12 or len(pw)>256 or pw!=request.form.get('confirm'):
-            flash('ØªØ£ÙƒØ¯ Ù…Ù† ØªØ·Ø§Ø¨Ù‚ ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± ÙˆØ£Ù†Ù‡Ø§ 12 Ø­Ø±ÙÙ‹Ø§ Ø¹Ù„Ù‰ Ø§Ù„Ø£Ù‚Ù„')
+            flash('تأكد من تطابق كلمة المرور وأنها 12 حرفًا على الأقل')
             return redirect(url_for('investor_reset',token=token))
         init_password_resets()
         with db() as conn,conn.cursor() as c:
             c.execute("""SELECT id,investor_id FROM investor_password_resets
                 WHERE token_hash=%s AND used_at IS NULL AND expires_at>NOW() FOR UPDATE""",(digest,))
             row=c.fetchone()
-            if not row:return 'Ø§Ù„Ø±Ø§Ø¨Ø· Ù…Ù†ØªÙ‡ÙŠ Ø§Ù„ØµÙ„Ø§Ø­ÙŠØ© Ø£Ùˆ Ù…Ø³ØªØ®Ø¯Ù… Ø¨Ø§Ù„ÙØ¹Ù„',400
+            if not row:return 'الرابط منتهي الصلاحية أو مستخدم بالفعل',400
             c.execute('UPDATE investor_accounts SET password_hash=%s WHERE id=%s',(generate_password_hash(pw),row[1]))
             c.execute('UPDATE investor_password_resets SET used_at=NOW() WHERE investor_id=%s AND used_at IS NULL',(row[1],))
         session.clear()
-        flash('ØªÙ… ØªØºÙŠÙŠØ± ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ±. Ø³Ø¬Ù‘Ù„ Ø§Ù„Ø¯Ø®ÙˆÙ„ Ø¨ÙƒÙ„Ù…Ø© Ø§Ù„Ù…Ø±ÙˆØ± Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©.')
+        flash('تم تغيير كلمة المرور. سجّل الدخول بكلمة المرور الجديدة.')
         return redirect(url_for('investors'))
-    return render_template_string(RESET_PAGE,heading='ØªØ¹ÙŠÙŠÙ† ÙƒÙ„Ù…Ø© Ù…Ø±ÙˆØ± Ø¬Ø¯ÙŠØ¯Ø©',help='Ø§Ù„Ø±Ø§Ø¨Ø· ØµØ§Ù„Ø­ Ù„Ù…Ø¯Ø© 20 Ø¯Ù‚ÙŠÙ‚Ø© ÙˆÙŠÙØ³ØªØ®Ø¯Ù… Ù…Ø±Ø© ÙˆØ§Ø­Ø¯Ø©.',csrf=csrf(),token=token)
+    return render_template_string(RESET_PAGE,heading='تعيين كلمة مرور جديدة',help='الرابط صالح لمدة 20 دقيقة ويُستخدم مرة واحدة.',csrf=csrf(),token=token)
 
 @app.route('/investors/logout')
 def investor_logout():
@@ -1319,15 +1319,15 @@ def init_investor_admin():
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
         c.execute("INSERT INTO owner_settings(id) VALUES(1) ON CONFLICT(id) DO NOTHING")
 
-OWNER_PAGE="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ† | Ø§Ù„Ø¨ÙˆØª Ø§Ù„ÙƒÙˆÙŠØªÙŠ</title>
+OWNER_PAGE="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>إدارة المستثمرين | البوت الكويتي</title>
 <style>body{font-family:system-ui;background:#101827;color:#eef3fa;padding:18px}main{max-width:1100px;margin:auto}article{background:#203047;border-radius:12px;padding:16px;margin:14px 0;overflow:auto}table{border-collapse:collapse;width:100%}td,th{padding:10px;border-bottom:1px solid #40536b;text-align:right;white-space:nowrap}input,button{padding:10px;font:inherit;border-radius:6px;max-width:100%}button{background:#31b99a;border:0}label{display:block;margin:12px 0}small{color:#c7d1df}a{color:#84dfff}</style>
-<main><h1>ðŸ‡°ðŸ‡¼ Ù„ÙˆØ­Ø© ØµØ§Ø­Ø¨ Ø§Ù„Ø¨ÙˆØª â€” Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙˆÙ†</h1><p><a href='/'>Ø§Ù„Ø¹ÙˆØ¯Ø© Ø¥Ù„Ù‰ Ù„ÙˆØ­Ø© Ø§Ù„Ø¨ÙˆØª</a> | <a href='/owner/requests'>Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø§Øª ÙˆØ·Ø±Ù‚ Ø§Ù„Ø¯ÙØ¹</a></p>
+<main><h1>🇰🇼 لوحة صاحب البوت — المستثمرون</h1><p><a href='/'>العودة إلى لوحة البوت</a> | <a href='/owner/requests'>الموافقات وطرق الدفع</a></p>
 {% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}
-<article><h2>Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ø¯Ù†Ù‰ Ù„Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±: {{settings.minimum_investment_usdt}} USDT</h2><p><small>Ø§Ù„Ø­Ø¯ Ø§Ù„Ø£Ø¯Ù†Ù‰ Ù…Ø¹Ù„ÙˆÙ…Ø© Ø¸Ø§Ù‡Ø±Ø© ÙÙŠ Ø§Ù„Ù…Ù†ØµØ©ØŒ ÙˆÙ„ÙŠØ³ Ø·Ù„Ø¨ ØªØ­ÙˆÙŠÙ„ Ø£Ùˆ ØªÙÙˆÙŠØ¶ Ù„Ø¥Ø¯Ø§Ø±Ø© Ø£Ù…ÙˆØ§Ù„.</small></p><p>Ø¹Ø¯Ø¯ Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ† Ø§Ù„Ù…Ø³Ø¬Ù„ÙŠÙ†: {{count}}</p></article>
-<article><h2>Ø¨ÙŠØ§Ù†Ø§Øª Ø¥ÙŠØ¯Ø§Ø¹ Ø±ÙŠÙ† â€” Ù…Ø­ÙÙˆØ¸Ø© Ù„Ù„Ø¥Ø¯Ø§Ø±Ø© ÙÙ‚Ø·</h2><p><small>Ù„Ø§ ØªØ¹Ø±Ø¶ Ù„Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ† ÙˆÙ„Ø§ ØªÙØ³ØªØ®Ø¯Ù… Ù„ØªØ­ØµÙŠÙ„ Ø£Ù…ÙˆØ§Ù„ ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹. ØªØ£ÙƒØ¯ Ù…Ù† Ø§Ù„Ø´Ø¨ÙƒØ© ÙˆØ§Ù„Ø¹Ù…Ù„Ø© ÙˆÙ‚ÙˆØ§Ø¹Ø¯ Ø±ÙŠÙ† Ù‚Ø¨Ù„ Ø£ÙŠ Ø§Ø³ØªØ®Ø¯Ø§Ù….</small></p><form method=post action='/owner/rain'><input type=hidden name=csrf value='{{csrf}}'><label>Ø´Ø¨ÙƒØ© Ø§Ù„Ø¥ÙŠØ¯Ø§Ø¹ <input name=network value='{{settings.rain_network or ""}}' maxlength=50 placeholder='Ù…Ø«Ø§Ù„: Ø´Ø¨ÙƒØ© Ù…Ø¯Ø¹ÙˆÙ…Ø© ÙØ¹Ù„Ø§Ù‹ ÙÙŠ Ø±ÙŠÙ†'></label><label>Ø¹Ù†ÙˆØ§Ù† Ø§Ù„Ø¥ÙŠØ¯Ø§Ø¹ <input name=address value='{{settings.rain_deposit_address or ""}}' maxlength=256 autocomplete=off placeholder='Ø£Ø¯Ø®Ù„ Ø§Ù„Ø¹Ù†ÙˆØ§Ù† Ù…Ù† Ø­Ø³Ø§Ø¨ Ø±ÙŠÙ† Ø¨Ù†ÙØ³Ùƒ'></label><button>Ø­ÙØ¸ Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø±ÙŠÙ†</button></form></article>
-<article><h2>Ù…Ù„Ø®Øµ Ø§Ù„Ø³Ø¬Ù„Ø§Øª (USDT)</h2><table><tr><th>Ø§Ù„ØªØµÙ†ÙŠÙ</th><th>Ø§Ù„Ø¥Ø¬Ù…Ø§Ù„ÙŠ Ø§Ù„Ù…Ø³Ø¬Ù„</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>Ù‡Ø°Ù‡ Ø³Ø¬Ù„Ø§Øª Ø¥Ø¯Ø§Ø±ÙŠØ© ØºÙŠØ± Ù…ØªØ­Ù‚Ù‘ÙŽÙ‚ Ù…Ù†Ù‡Ø§ Ø¨Ù†Ø¸Ø§Ù… Ø¯ÙØ¹ Ø£Ùˆ Ø­Ø³Ø§Ø¨Ø§Øª ØªØ¯Ø§ÙˆÙ„ Ù…Ù†ÙØµÙ„Ø©Ø› Ù„ÙŠØ³Øª Ø±ØµÙŠØ¯Ø§Ù‹ Ø£Ùˆ Ø¯Ø®Ù„Ø§Ù‹ ÙØ¹Ù„ÙŠØ§Ù‹ Ù…Ø¤ÙƒØ¯Ø§Ù‹. Ù„Ø§ ÙŠØªÙ… ØªØ­ÙˆÙŠÙ„ ÙƒÙ„ 100 Ø¯ÙˆÙ„Ø§Ø± ØªÙ„Ù‚Ø§Ø¦ÙŠØ§Ù‹.</small></article>
-<article><h2>ðŸ›¡ï¸ Ø¯Ø¹Ù… Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</h2><p>Ø§ÙØªØ­ Ø­Ø³Ø§Ø¨ Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± Ù„Ù„Ù…Ø´Ø§Ù‡Ø¯Ø© Ø£Ùˆ Ù„ØªØ¹Ø¯ÙŠÙ„ Ø¨ÙŠØ§Ù†Ø§ØªÙ‡ Ø§Ù„Ø¥Ø¯Ø§Ø±ÙŠØ©. Ù„Ø§ ÙŠØªÙ… ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø¯Ø®ÙˆÙ„ Ø¨ÙƒÙ„Ù…Ø© Ù…Ø±ÙˆØ±Ù‡ØŒ ÙˆÙ„Ø§ ÙŠØ³Ù…Ø­ Ù‡Ø°Ø§ Ø§Ù„ÙˆØ¶Ø¹ Ø¨Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø£Ùˆ Ø§Ù„Ø³Ø­Ø¨.</p><p><a href='/owner/support'>ÙØªØ­ Ù„ÙˆØ­Ø© Ø¯Ø¹Ù… Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a></p></article><article><h2>Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙˆÙ† ÙˆØ§Ù„Ø§Ø´ØªØ±Ø§ÙƒØ§Øª</h2><table><tr><th>Ø±Ù‚Ù…</th><th>Ø§Ù„Ø¨Ø±ÙŠØ¯</th><th>Ø§Ù„Ø­Ø§Ù„Ø©</th><th>Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„ØªØ¬Ø±Ø¨Ø©</th><th>Ø§Ù†ØªÙ‡Ø§Ø¡ Ø§Ù„Ù…Ø¯ÙÙˆØ¹</th><th>Ø§Ù„ØªØ³Ø¬ÙŠÙ„</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or 'â€”'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
-<article><h2>Ø£Ø­Ø¯Ø« Ø³Ø¬Ù„Ø§Øª Ø§Ù„Ø£Ù…ÙˆØ§Ù„ ÙˆØ§Ù„Ø£Ø±Ø¨Ø§Ø­ ÙˆØ§Ù„Ø®Ø³Ø§Ø¦Ø±</h2><table><tr><th>Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</th><th>Ø§Ù„Ù†ÙˆØ¹</th><th>Ø§Ù„Ù…Ø¨Ù„Øº</th><th>Ø§Ù„Ù…Ø±Ø¬Ø¹</th><th>Ø§Ù„ØªØ§Ø±ÙŠØ®</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or 'â€”'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>Ù„Ø§ ØªÙØ³Ø¬Ù‘ÙŽÙ„ Ø¹Ù…Ù„ÙŠØ§Øª Ù…Ø§Ù„ÙŠØ© Ø¥Ù„Ø§ Ø¨Ø¹Ø¯ Ø±Ø¨Ø· Ù…ØµØ¯Ø± Ù…ÙˆØ«ÙˆÙ‚ Ù„Ù„ØªØ­Ù‚Ù‚. Ù…Ø´Ø§Ø±ÙƒØ© Ø§Ù„Ø£Ø±Ø¨Ø§Ø­ 50% Ø¨Ù†Ø¯ Ù…Ù‚ØªØ±Ø­ ØºÙŠØ± Ù…ÙÙØ¹Ù‘Ù„.</small></p></article></main></html>"""
+<article><h2>الحد الأدنى للاستثمار: {{settings.minimum_investment_usdt}} USDT</h2><p><small>الحد الأدنى معلومة ظاهرة في المنصة، وليس طلب تحويل أو تفويض لإدارة أموال.</small></p><p>عدد المستثمرين المسجلين: {{count}}</p></article>
+<article><h2>بيانات إيداع رين — محفوظة للإدارة فقط</h2><p><small>لا تعرض للمستثمرين ولا تُستخدم لتحصيل أموال تلقائياً. تأكد من الشبكة والعملة وقواعد رين قبل أي استخدام.</small></p><form method=post action='/owner/rain'><input type=hidden name=csrf value='{{csrf}}'><label>شبكة الإيداع <input name=network value='{{settings.rain_network or ""}}' maxlength=50 placeholder='مثال: شبكة مدعومة فعلاً في رين'></label><label>عنوان الإيداع <input name=address value='{{settings.rain_deposit_address or ""}}' maxlength=256 autocomplete=off placeholder='أدخل العنوان من حساب رين بنفسك'></label><button>حفظ إعدادات رين</button></form></article>
+<article><h2>ملخص السجلات (USDT)</h2><table><tr><th>التصنيف</th><th>الإجمالي المسجل</th></tr>{% for item in totals %}<tr><td>{{labels.get(item.category,item.category)}}</td><td>{{item.total}}</td></tr>{% endfor %}</table><small>هذه سجلات إدارية غير متحقَّق منها بنظام دفع أو حسابات تداول منفصلة؛ ليست رصيداً أو دخلاً فعلياً مؤكداً. لا يتم تحويل كل 100 دولار تلقائياً.</small></article>
+<article><h2>🛡️ دعم المستثمرين</h2><p>افتح حساب المستثمر للمشاهدة أو لتعديل بياناته الإدارية. لا يتم تسجيل الدخول بكلمة مروره، ولا يسمح هذا الوضع بالتداول أو السحب.</p><p><a href='/owner/support'>فتح لوحة دعم المستثمرين</a></p></article><article><h2>المستثمرون والاشتراكات</h2><table><tr><th>رقم</th><th>البريد</th><th>الحالة</th><th>انتهاء التجربة</th><th>انتهاء المدفوع</th><th>التسجيل</th></tr>{% for u in users %}<tr><td>{{u.id}}</td><td>{{u.email}}</td><td>{{u.subscription_status}}</td><td>{{u.trial_end}}</td><td>{{u.paid_until or '—'}}</td><td>{{u.created_at}}</td></tr>{% endfor %}</table></article>
+<article><h2>أحدث سجلات الأموال والأرباح والخسائر</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ</th><th>المرجع</th><th>التاريخ</th></tr>{% for r in records %}<tr><td>{{r.email}}</td><td>{{labels.get(r.category,r.category)}}</td><td>{{r.amount_usdt}}</td><td>{{r.reference or '—'}}</td><td>{{r.created_at}}</td></tr>{% endfor %}</table><p><small>لا تُسجَّل عمليات مالية إلا بعد ربط مصدر موثوق للتحقق. مشاركة الأرباح 50% بند مقترح غير مُفعّل.</small></p></article></main></html>"""
 
 @app.route('/owner/investors')
 @auth
@@ -1339,7 +1339,7 @@ def owner_investors():
         c.execute('SELECT id,email,subscription_status,trial_end,paid_until,created_at FROM investor_accounts ORDER BY id DESC LIMIT 300');users=c.fetchall()
         c.execute('SELECT category, SUM(amount_usdt) AS total FROM investor_financial_records GROUP BY category ORDER BY category');totals=c.fetchall()
         c.execute('SELECT r.category,r.amount_usdt,r.reference,r.created_at,a.email FROM investor_financial_records r JOIN investor_accounts a ON a.id=r.investor_id ORDER BY r.id DESC LIMIT 100');records=c.fetchall()
-    labels={'SUBSCRIPTION':'Ø§Ø´ØªØ±Ø§ÙƒØ§Øª','INVESTMENT_DECLARED':'Ø§Ø³ØªØ«Ù…Ø§Ø± Ù…ÙØ¹Ù„Ù†','TRADE_PROFIT':'Ø±Ø¨Ø­ ØµÙÙ‚Ø©','TRADE_LOSS':'Ø®Ø³Ø§Ø±Ø© ØµÙÙ‚Ø©','PROFIT_SHARE_PROPOSED':'Ø­ØµØ© Ø£Ø±Ø¨Ø§Ø­ Ù…Ù‚ØªØ±Ø­Ø©'}
+    labels={'SUBSCRIPTION':'اشتراكات','INVESTMENT_DECLARED':'استثمار مُعلن','TRADE_PROFIT':'ربح صفقة','TRADE_LOSS':'خسارة صفقة','PROFIT_SHARE_PROPOSED':'حصة أرباح مقترحة'}
     return render_template_string(OWNER_PAGE,settings=settings,count=count,users=users,totals=totals,records=records,labels=labels,csrf=csrf())
 
 @app.route('/owner/rain',methods=['POST'])
@@ -1349,11 +1349,11 @@ def owner_rain():
     network=request.form.get('network','').strip()
     address=request.form.get('address','').strip()
     if len(network)>50 or len(address)>256 or (address and not network):
-        flash('Ø£Ø¯Ø®Ù„ Ø§Ù„Ø´Ø¨ÙƒØ© ÙˆØ§Ù„Ø¹Ù†ÙˆØ§Ù† Ø§Ù„ØµØ­ÙŠØ­ÙŠÙ†');return redirect(url_for('owner_investors'))
+        flash('أدخل الشبكة والعنوان الصحيحين');return redirect(url_for('owner_investors'))
     init_investor_admin()
     with db() as conn,conn.cursor() as c:
         c.execute('UPDATE owner_settings SET rain_network=%s,rain_deposit_address=%s,updated_at=NOW() WHERE id=1',(network or None,address or None))
-    flash('Ø­ÙÙØ¸Øª Ø¨ÙŠØ§Ù†Ø§Øª Ø±ÙŠÙ† Ù„Ù„Ø¥Ø¯Ø§Ø±Ø© ÙÙ‚Ø·Ø› Ù„Ù… ÙŠØªÙ… ØªÙØ¹ÙŠÙ„ Ø£ÙŠ ØªØ­ØµÙŠÙ„')
+    flash('حُفظت بيانات رين للإدارة فقط؛ لم يتم تفعيل أي تحصيل')
     return redirect(url_for('owner_investors'))
 
 
@@ -1385,7 +1385,7 @@ def init_approval_workflow():
 APPROVAL_STYLE="""<style>body{font-family:system-ui;background:#101827;color:#f2f5fc;margin:0;padding:18px}main{max-width:1050px;margin:auto}article{background:#213047;border-radius:12px;padding:16px;margin:12px 0;overflow:auto}input,select,button{font:inherit;padding:10px;margin:6px;max-width:100%}button{background:#32b99b;border:0;border-radius:7px}table{border-collapse:collapse;width:100%}td,th{padding:9px;border-bottom:1px solid #45556d;text-align:right}a{color:#8adfff}small{color:#c7d1df}</style>"""
 
 def kwt(dt):
-    if not dt:return 'â€”'
+    if not dt:return '—'
     from zoneinfo import ZoneInfo
     return dt.astimezone(ZoneInfo('Asia/Kuwait')).strftime('%Y-%m-%d %H:%M:%S')
 
@@ -1396,7 +1396,7 @@ def investor_requests_page():
     with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
         c.execute('SELECT id,label,description FROM owner_payment_methods WHERE enabled=TRUE ORDER BY id DESC');methods=c.fetchall()
         c.execute('SELECT kind,status,amount_usdt,investment_mode,pooled_amount_usdt,individual_amount_usdt,created_at,decided_at FROM investor_requests WHERE investor_id=%s ORDER BY id DESC LIMIT 100',(session['investor_id'],));rows=c.fetchall()
-    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</title>"""+APPROVAL_STYLE+"""<main><h1>Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ ÙˆØ§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±</h1><p><a href='/investors'>Ø§Ù„Ø¹ÙˆØ¯Ø© Ù„ØµÙØ­Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</a></p><article><strong>Ø§Ù„Ø·Ù„Ø¨Ø§Øª Ù„Ù„Ù…Ø±Ø§Ø¬Ø¹Ø© ÙÙ‚Ø·.</strong> Ù„Ø§ ØªØ±Ø³Ù„ Ø£Ù…ÙˆØ§Ù„Ø§Ù‹ ÙˆÙ„Ø§ ØªÙˆØ¬Ø¯ ØªØ¹Ù„ÙŠÙ…Ø§Øª ØªØ­ÙˆÙŠÙ„ Ø£Ùˆ Ø¯ÙØ¹ Ù…ÙØ¹Ù‘Ù„Ø©. Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø© Ù„Ø§ ØªØ«Ø¨Øª Ø§Ø³ØªÙ„Ø§Ù… Ø§Ù„Ù…Ø§Ù„ ÙˆÙ„Ø§ ØªØ¨Ø¯Ø£ ØªØ¯Ø§ÙˆÙ„Ø§Ù‹.</article>{% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}<article><h2>Ø·Ù„Ø¨ Ù…Ø±Ø§Ø¬Ø¹Ø© Ø§Ø´ØªØ±Ø§Ùƒ</h2><form method=post action='/investors/requests/new'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=kind value=SUBSCRIPTION><label>Ø·Ø±ÙŠÙ‚Ø© Ø§Ù„Ø¯ÙØ¹ Ø§Ù„Ù…ÙØ¶Ù„Ø© (Ù„Ù„ØªØ®Ø·ÙŠØ· ÙÙ‚Ø·)</label><select name=method_id><option value=''>Ù„Ù… Ø£Ø­Ø¯Ø¯</option>{% for m in methods %}<option value='{{m.id}}'>{{m.label}}</option>{% endfor %}</select><button>Ø¥Ø±Ø³Ø§Ù„ Ø·Ù„Ø¨ Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ Ù„Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©</button></form></article><article><h2>Ø·Ù„Ø¨ Ù…Ø±Ø§Ø¬Ø¹Ø© Ù…Ø¨Ù„Øº Ø§Ø³ØªØ«Ù…Ø§Ø±</h2><form method=post action='/investors/requests/new'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=kind value=INVESTMENT><label>Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„Ù…Ù‚ØªØ±Ø­ (50 USDT Ø¹Ù„Ù‰ Ø§Ù„Ø£Ù‚Ù„)</label><input name=amount type=number min=50 step=.01 required><label>Ø·Ø±ÙŠÙ‚Ø© Ø§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±</label><select name=investment_mode required><option value=POOLED>Ù…Ø­ÙØ¸Ø© Ù…Ø´ØªØ±ÙƒØ© â€” ØªÙˆØ²ÙŠØ¹ Ø§Ù„Ù†ØªØ§Ø¦Ø¬ Ø­Ø³Ø¨ Ø§Ù„Ø­ØµØµ</option><option value=INDIVIDUAL>ØµÙÙ‚Ø§Øª Ù…Ø³ØªÙ‚Ù„Ø© Ù…Ø­Ø§Ø³Ø¨ÙŠÙ‹Ø§ â€” Ø³Ø¬Ù„ Ù…Ø®ØµØµ Ù„ÙŠ</option><option value=BOTH>Ø§Ù„Ù†Ø¸Ø§Ù…Ø§Ù† Ù…Ø¹Ù‹Ø§ â€” Ø£ÙˆØ²Ø¹ Ø§Ù„Ù…Ø¨Ù„Øº Ø¨ÙŠÙ†Ù‡Ù…Ø§</option></select><label>Ø¥Ø°Ø§ Ø§Ø®ØªØ±Øª Ø§Ù„Ù†Ø¸Ø§Ù…ÙŠÙ†: Ø§Ù„Ù…Ø¨Ù„Øº Ù„Ù„Ù…Ø­ÙØ¸Ø© Ø§Ù„Ù…Ø´ØªØ±ÙƒØ© (USDT)</label><input name=pooled_amount type=number min=.01 step=.01 placeholder="Ù…Ø«Ø§Ù„: 30"><label>Ø§Ù„Ù…Ø¨Ù„Øº Ù„Ù„ØµÙÙ‚Ø§Øª Ø§Ù„ÙØ±Ø¯ÙŠØ© (USDT)</label><input name=individual_amount type=number min=.01 step=.01 placeholder="Ù…Ø«Ø§Ù„: 20"><small>Ø¹Ù†Ø¯ Ø§Ø®ØªÙŠØ§Ø± Ø§Ù„Ù†Ø¸Ø§Ù…ÙŠÙ† ÙŠØ¬Ø¨ Ø£Ù† ÙŠØ³Ø§ÙˆÙŠ Ù…Ø¬Ù…ÙˆØ¹ Ø§Ù„Ù…Ø¨Ù„ØºÙŠÙ† Ø¥Ø¬Ù…Ø§Ù„ÙŠ Ø§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±ØŒ Ø¨Ø­Ø¯ Ø£Ø¯Ù†Ù‰ Ø¥Ø¬Ù…Ø§Ù„ÙŠ 50 USDT.</small><p><small>Ø§Ù„Ø§Ø®ØªÙŠØ§Ø± Ù„Ù„Ù…Ø±Ø§Ø¬Ø¹Ø© ÙÙ‚Ø·ØŒ ÙˆÙ„Ø§ ÙŠÙÙØ¹Ù‘Ù„ ØªØ¯Ø§ÙˆÙ„Ù‹Ø§ Ø£Ùˆ Ø¥ÙŠØ¯Ø§Ø¹Ù‹Ø§.</small></p><button>Ø¥Ø±Ø³Ø§Ù„ Ø§Ù„Ù…Ø¨Ù„Øº Ù„Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©</button></form></article><article><h2>Ø·Ø±Ù‚ Ø§Ù„Ø¯ÙØ¹ Ø§Ù„Ù…Ù‚ØªØ±Ø­Ø©</h2>{% for m in methods %}<p><b>{{m.label}}</b> â€” {{m.description}}</p>{% else %}<p>Ù„Ù… ØªÙØ¶Ù Ø·Ø±Ù‚ Ø¨Ø¹Ø¯.</p>{% endfor %}<small>Ù„Ø§ ØªØ¸Ù‡Ø± Ø¹Ù†Ø§ÙˆÙŠÙ† Ø§Ù„Ù…Ø­Ø§ÙØ¸ Ø£Ùˆ Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„ØªØ­ÙˆÙŠÙ„ Ù‡Ù†Ø§ Ø­ØªÙ‰ ÙŠÙØ¬Ù‡Ø² Ù†Ø¸Ø§Ù… Ø¯ÙØ¹ Ù…Ø±Ø®Øµ ÙˆØ¢Ù…Ù†.</small></article><article><h2>Ø³Ø¬Ù„ Ø·Ù„Ø¨Ø§ØªÙŠ â€” Ø¨ØªÙˆÙ‚ÙŠØª Ø§Ù„ÙƒÙˆÙŠØª</h2><table><tr><th>Ø§Ù„Ù†ÙˆØ¹</th><th>Ø§Ù„Ù…Ø¨Ù„Øº</th><th>Ø§Ù„Ù†Ø¸Ø§Ù…</th><th>Ø§Ù„Ø­Ø§Ù„Ø©</th><th>Ø§Ù„Ø¥Ù†Ø´Ø§Ø¡</th><th>Ø§Ù„Ù‚Ø±Ø§Ø±</th></tr>{% for r in rows %}<tr><td>{{r.kind}}</td><td>{{r.amount_usdt or 'â€”'}}</td><td>{{'Ù…Ø´ØªØ±Ùƒ' if r.investment_mode=='POOLED' else 'Ù…Ø³ØªÙ‚Ù„ Ù…Ø­Ø§Ø³Ø¨ÙŠÙ‹Ø§' if r.investment_mode=='INDIVIDUAL' else 'Ø§Ù„Ù†Ø¸Ø§Ù…Ø§Ù† Ù…Ø¹Ù‹Ø§' if r.investment_mode=='BOTH' else 'â€”'}}{% if r.investment_mode=='BOTH' %} (Ù…Ø´ØªØ±Ùƒ {{r.pooled_amount_usdt}} / ÙØ±Ø¯ÙŠ {{r.individual_amount_usdt}}){% endif %}</td><td>{{r.status}}</td><td>{{kwt(r.created_at)}}</td><td>{{kwt(r.decided_at)}}</td></tr>{% endfor %}</table></article></main></html>"""
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>طلبات المستثمر</title>"""+APPROVAL_STYLE+"""<main><h1>طلبات الاشتراك والاستثمار</h1><p><a href='/investors'>العودة لصفحة المستثمر</a></p><article><strong>الطلبات للمراجعة فقط.</strong> لا ترسل أموالاً ولا توجد تعليمات تحويل أو دفع مفعّلة. الموافقة لا تثبت استلام المال ولا تبدأ تداولاً.</article>{% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}<article><h2>طلب مراجعة اشتراك</h2><form method=post action='/investors/requests/new'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=kind value=SUBSCRIPTION><label>طريقة الدفع المفضلة (للتخطيط فقط)</label><select name=method_id><option value=''>لم أحدد</option>{% for m in methods %}<option value='{{m.id}}'>{{m.label}}</option>{% endfor %}</select><button>إرسال طلب الاشتراك للمراجعة</button></form></article><article><h2>طلب مراجعة مبلغ استثمار</h2><form method=post action='/investors/requests/new'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=kind value=INVESTMENT><label>المبلغ المقترح (50 USDT على الأقل)</label><input name=amount type=number min=50 step=.01 required><label>طريقة الاستثمار</label><select name=investment_mode required><option value=POOLED>محفظة مشتركة — توزيع النتائج حسب الحصص</option><option value=INDIVIDUAL>صفقات مستقلة محاسبيًا — سجل مخصص لي</option><option value=BOTH>النظامان معًا — أوزع المبلغ بينهما</option></select><label>إذا اخترت النظامين: المبلغ للمحفظة المشتركة (USDT)</label><input name=pooled_amount type=number min=.01 step=.01 placeholder="مثال: 30"><label>المبلغ للصفقات الفردية (USDT)</label><input name=individual_amount type=number min=.01 step=.01 placeholder="مثال: 20"><small>عند اختيار النظامين يجب أن يساوي مجموع المبلغين إجمالي الاستثمار، بحد أدنى إجمالي 50 USDT.</small><p><small>الاختيار للمراجعة فقط، ولا يُفعّل تداولًا أو إيداعًا.</small></p><button>إرسال المبلغ للمراجعة</button></form></article><article><h2>طرق الدفع المقترحة</h2>{% for m in methods %}<p><b>{{m.label}}</b> — {{m.description}}</p>{% else %}<p>لم تُضف طرق بعد.</p>{% endfor %}<small>لا تظهر عناوين المحافظ أو بيانات التحويل هنا حتى يُجهز نظام دفع مرخص وآمن.</small></article><article><h2>سجل طلباتي — بتوقيت الكويت</h2><table><tr><th>النوع</th><th>المبلغ</th><th>النظام</th><th>الحالة</th><th>الإنشاء</th><th>القرار</th></tr>{% for r in rows %}<tr><td>{{r.kind}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{'مشترك' if r.investment_mode=='POOLED' else 'مستقل محاسبيًا' if r.investment_mode=='INDIVIDUAL' else 'النظامان معًا' if r.investment_mode=='BOTH' else '—'}}{% if r.investment_mode=='BOTH' %} (مشترك {{r.pooled_amount_usdt}} / فردي {{r.individual_amount_usdt}}){% endif %}</td><td>{{r.status}}</td><td>{{kwt(r.created_at)}}</td><td>{{kwt(r.decided_at)}}</td></tr>{% endfor %}</table></article></main></html>"""
     return render_template_string(html,methods=methods,rows=rows,csrf=csrf(),kwt=kwt)
 
 @app.route('/investors/requests/new',methods=['POST'])
@@ -1404,35 +1404,35 @@ def investor_request_new():
     if not session.get('investor_id'):return redirect(url_for('investors'))
     check_csrf();init_approval_workflow()
     kind=request.form.get('kind')
-    if kind not in ('SUBSCRIPTION','INVESTMENT'):return 'Ù†ÙˆØ¹ Ø·Ù„Ø¨ ØºÙŠØ± ØµØ­ÙŠØ­',400
+    if kind not in ('SUBSCRIPTION','INVESTMENT'):return 'نوع طلب غير صحيح',400
     amount=None;method_id=None;investment_mode=None;pooled_amount=None;individual_amount=None
     if kind=='INVESTMENT':
         try:amount=D(request.form.get('amount',''))
-        except Exception:return 'Ù…Ø¨Ù„Øº ØºÙŠØ± ØµØ§Ù„Ø­',400
-        if not amount.is_finite() or amount<50 or amount>D('100000000') or amount.as_tuple().exponent < -2:return 'Ø§Ù„Ù…Ø¨Ù„Øº ÙŠØ¬Ø¨ Ø£Ù† ÙŠÙƒÙˆÙ† 50 Ø¹Ù„Ù‰ Ø§Ù„Ø£Ù‚Ù„ ÙˆØ¨Ø¯Ù‚Ø© Ø³Ù†Øª',400
+        except Exception:return 'مبلغ غير صالح',400
+        if not amount.is_finite() or amount<50 or amount>D('100000000') or amount.as_tuple().exponent < -2:return 'المبلغ يجب أن يكون 50 على الأقل وبدقة سنت',400
         investment_mode=request.form.get('investment_mode')
-        if investment_mode not in ('POOLED','INDIVIDUAL','BOTH'):return 'Ø§Ø®ØªØ± Ø·Ø±ÙŠÙ‚Ø© Ø§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±',400
+        if investment_mode not in ('POOLED','INDIVIDUAL','BOTH'):return 'اختر طريقة الاستثمار',400
         if investment_mode=='BOTH':
             try:
                 pooled_amount=D(request.form.get('pooled_amount',''))
                 individual_amount=D(request.form.get('individual_amount',''))
-            except Exception:return 'Ø£Ø¯Ø®Ù„ Ø§Ù„Ù…Ø¨Ù„Øº Ø§Ù„Ù…Ø®ØµØµ Ù„ÙƒÙ„ Ù†Ø¸Ø§Ù…',400
+            except Exception:return 'أدخل المبلغ المخصص لكل نظام',400
             for part in (pooled_amount,individual_amount):
                 if not part.is_finite() or part<D('0.01') or part.as_tuple().exponent < -2:
-                    return 'ÙŠØ¬Ø¨ Ø¥Ø¯Ø®Ø§Ù„ Ù…Ø¨Ù„Øº ØµØ­ÙŠØ­ Ù„ÙƒÙ„ Ù†Ø¸Ø§Ù… Ø¨Ø¯Ù‚Ø© Ø³Ù†Øª',400
+                    return 'يجب إدخال مبلغ صحيح لكل نظام بدقة سنت',400
             if pooled_amount+individual_amount!=amount:
-                return 'Ù…Ø¬Ù…ÙˆØ¹ Ù…Ø¨Ø§Ù„Øº Ø§Ù„Ù†Ø¸Ø§Ù…ÙŠÙ† Ù„Ø§ ÙŠØ³Ø§ÙˆÙŠ Ø¥Ø¬Ù…Ø§Ù„ÙŠ Ø§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±',400
+                return 'مجموع مبالغ النظامين لا يساوي إجمالي الاستثمار',400
     else:
         raw=request.form.get('method_id','')
         if raw:
-            if not raw.isdecimal():return 'Ø·Ø±ÙŠÙ‚Ø© ØºÙŠØ± ØµØ­ÙŠØ­Ø©',400
+            if not raw.isdecimal():return 'طريقة غير صحيحة',400
             method_id=int(raw)
             with db() as conn,conn.cursor() as c:
                 c.execute('SELECT 1 FROM owner_payment_methods WHERE id=%s AND enabled=TRUE',(method_id,))
-                if not c.fetchone():return 'Ø·Ø±ÙŠÙ‚Ø© ØºÙŠØ± Ù…ØªØ§Ø­Ø©',400
+                if not c.fetchone():return 'طريقة غير متاحة',400
     with db() as conn,conn.cursor() as c:
         c.execute('INSERT INTO investor_requests(investor_id,kind,amount_usdt,method_id,investment_mode,pooled_amount_usdt,individual_amount_usdt) VALUES(%s,%s,%s,%s,%s,%s,%s)',(session['investor_id'],kind,amount,method_id,investment_mode,pooled_amount,individual_amount))
-    flash('ØªÙ… Ø¥Ø±Ø³Ø§Ù„ Ø§Ù„Ø·Ù„Ø¨ Ù„Ù„Ù…Ø±Ø§Ø¬Ø¹Ø©ØŒ ÙˆÙ„Ø§ ÙŠÙØ·Ù„Ø¨ Ù…Ù†Ùƒ ØªØ­ÙˆÙŠÙ„ Ø£Ù…ÙˆØ§Ù„')
+    flash('تم إرسال الطلب للمراجعة، ولا يُطلب منك تحويل أموال')
     return redirect(url_for('investor_requests_page'))
 
 @app.route('/owner/requests')
@@ -1442,7 +1442,7 @@ def owner_requests_page():
     with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
         c.execute('SELECT * FROM owner_payment_methods ORDER BY id DESC');methods=c.fetchall()
         c.execute('SELECT r.*,a.email,m.label AS method FROM investor_requests r JOIN investor_accounts a ON a.id=r.investor_id LEFT JOIN owner_payment_methods m ON m.id=r.method_id ORDER BY r.id DESC LIMIT 300');rows=c.fetchall()
-    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Ù…ÙˆØ§ÙÙ‚Ø§Øª Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</title>"""+APPROVAL_STYLE+"""<main><h1>ðŸ‡°ðŸ‡¼ Ø§Ù„Ù…ÙˆØ§ÙÙ‚Ø§Øª ÙˆØ·Ø±Ù‚ Ø§Ù„Ø¯ÙØ¹</h1><p><a href='/owner/investors'>Ù„ÙˆØ­Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a> | <a href="/owner/payouts">Ù…Ø³ØªØ­Ù‚Ø§ØªÙŠ ÙˆÙˆØ¬Ù‡Ø© Ø§Ù„ØªØ­ÙˆÙŠÙ„</a></p><article><strong>Ù†Ø¸Ø§Ù… Ù…ÙˆØ§ÙÙ‚Ø§Øª Ù…Ø¨Ø¯Ø¦ÙŠØ© ÙÙ‚Ø·.</strong> Ù„Ø§ ØªÙˆØ¬Ø¯ ØªØ­ÙˆÙŠÙ„Ø§Øª Ø£Ùˆ ØªÙØ¹ÙŠÙ„ Ø§Ø³ØªØ«Ù…Ø§Ø± Ø£Ùˆ Ø§Ù‚ØªØ·Ø§Ø¹ Ø£Ø±Ø¨Ø§Ø­. Ø¬Ù…ÙŠØ¹ Ø§Ù„Ø£ÙˆÙ‚Ø§Øª Ø¨ØªÙˆÙ‚ÙŠØª Ø§Ù„ÙƒÙˆÙŠØª Ù…Ø¹ Ø§Ù„Ø«ÙˆØ§Ù†ÙŠ.</article>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>Ø¥Ø¶Ø§ÙØ© Ø·Ø±ÙŠÙ‚Ø© Ø¯ÙØ¹ Ù„Ù„Ø¹Ø±Ø¶</h2><form method=post action='/owner/methods/add'><input type=hidden name=csrf value='{{csrf}}'><input name=label maxlength=80 placeholder='Ø§Ø³Ù… Ø§Ù„Ø·Ø±ÙŠÙ‚Ø© Ù…Ø«Ù„ Ø±ÙŠÙ† Ø£Ùˆ ØªØ­ÙˆÙŠÙ„ Ø¨Ù†ÙƒÙŠ' required><input name=description maxlength=200 placeholder='ÙˆØµÙ Ø¹Ø§Ù… ÙÙ‚Ø· â€” Ø¨Ø¯ÙˆÙ† Ø¨ÙŠØ§Ù†Ø§Øª ØªØ­ÙˆÙŠÙ„'><button>Ø¥Ø¶Ø§ÙØ©</button></form><table><tr><th>Ø§Ù„Ø·Ø±ÙŠÙ‚Ø©</th><th>Ø§Ù„ÙˆØµÙ</th><th>Ø§Ù„Ø­Ø§Ù„Ø©</th><th>ØªØ§Ø±ÙŠØ® Ø§Ù„Ø¥Ø¶Ø§ÙØ©</th><th>Ø¥Ø¬Ø±Ø§Ø¡</th></tr>{% for m in methods %}<tr><td>{{m.label}}</td><td>{{m.description}}</td><td>{{'Ù…Ø¹Ø±ÙˆØ¶Ø©' if m.enabled else 'Ù…Ø®ÙÙŠØ©'}}</td><td>{{kwt(m.created_at)}}</td><td><form method=post action='/owner/methods/toggle'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=id value='{{m.id}}'><button>{{'Ø¥Ø®ÙØ§Ø¡' if m.enabled else 'Ø¥Ø¸Ù‡Ø§Ø±'}}</button></form></td></tr>{% endfor %}</table></article><article><h2>Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</h2><table><tr><th>Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</th><th>Ø§Ù„Ù†ÙˆØ¹</th><th>Ø§Ù„Ù…Ø¨Ù„Øº USDT</th><th>Ù†Ø¸Ø§Ù… Ø§Ù„Ø§Ø³ØªØ«Ù…Ø§Ø±</th><th>Ø§Ù„Ø·Ø±ÙŠÙ‚Ø©</th><th>Ø§Ù„Ø­Ø§Ù„Ø©</th><th>ØªØ§Ø±ÙŠØ® Ø§Ù„Ø·Ù„Ø¨</th><th>ØªØ§Ø±ÙŠØ® Ø§Ù„Ù‚Ø±Ø§Ø±</th><th>Ø§Ù„Ù‚Ø±Ø§Ø±</th></tr>{% for r in rows %}<tr><td>{{r.email}}</td><td>{{r.kind}}</td><td>{{r.amount_usdt or 'â€”'}}</td><td>{{'Ù…Ø´ØªØ±Ùƒ' if r.investment_mode=='POOLED' else 'Ù…Ø³ØªÙ‚Ù„ Ù…Ø­Ø§Ø³Ø¨ÙŠÙ‹Ø§' if r.investment_mode=='INDIVIDUAL' else 'Ø§Ù„Ù†Ø¸Ø§Ù…Ø§Ù† Ù…Ø¹Ù‹Ø§' if r.investment_mode=='BOTH' else 'â€”'}}{% if r.investment_mode=='BOTH' %} (Ù…Ø´ØªØ±Ùƒ {{r.pooled_amount_usdt}} / ÙØ±Ø¯ÙŠ {{r.individual_amount_usdt}}){% endif %}</td><td>{{r.method or 'â€”'}}</td><td>{{r.status}}</td><td>{{kwt(r.created_at)}}</td><td>{{kwt(r.decided_at)}}</td><td>{% if r.status=='PENDING' %}<form method=post action='/owner/requests/decide'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=id value='{{r.id}}'><button name=decision value=APPROVED>Ù…ÙˆØ§ÙÙ‚Ø© Ù…Ø¨Ø¯Ø¦ÙŠØ©</button><button name=decision value=REJECTED>Ø±ÙØ¶</button></form>{% endif %}</td></tr>{% endfor %}</table></article></main></html>"""
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>موافقات المستثمرين</title>"""+APPROVAL_STYLE+"""<main><h1>🇰🇼 الموافقات وطرق الدفع</h1><p><a href='/owner/investors'>لوحة المستثمرين</a> | <a href="/owner/payouts">مستحقاتي ووجهة التحويل</a></p><article><strong>نظام موافقات مبدئية فقط.</strong> لا توجد تحويلات أو تفعيل استثمار أو اقتطاع أرباح. جميع الأوقات بتوقيت الكويت مع الثواني.</article>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>إضافة طريقة دفع للعرض</h2><form method=post action='/owner/methods/add'><input type=hidden name=csrf value='{{csrf}}'><input name=label maxlength=80 placeholder='اسم الطريقة مثل رين أو تحويل بنكي' required><input name=description maxlength=200 placeholder='وصف عام فقط — بدون بيانات تحويل'><button>إضافة</button></form><table><tr><th>الطريقة</th><th>الوصف</th><th>الحالة</th><th>تاريخ الإضافة</th><th>إجراء</th></tr>{% for m in methods %}<tr><td>{{m.label}}</td><td>{{m.description}}</td><td>{{'معروضة' if m.enabled else 'مخفية'}}</td><td>{{kwt(m.created_at)}}</td><td><form method=post action='/owner/methods/toggle'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=id value='{{m.id}}'><button>{{'إخفاء' if m.enabled else 'إظهار'}}</button></form></td></tr>{% endfor %}</table></article><article><h2>طلبات المستثمرين</h2><table><tr><th>المستثمر</th><th>النوع</th><th>المبلغ USDT</th><th>نظام الاستثمار</th><th>الطريقة</th><th>الحالة</th><th>تاريخ الطلب</th><th>تاريخ القرار</th><th>القرار</th></tr>{% for r in rows %}<tr><td>{{r.email}}</td><td>{{r.kind}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{'مشترك' if r.investment_mode=='POOLED' else 'مستقل محاسبيًا' if r.investment_mode=='INDIVIDUAL' else 'النظامان معًا' if r.investment_mode=='BOTH' else '—'}}{% if r.investment_mode=='BOTH' %} (مشترك {{r.pooled_amount_usdt}} / فردي {{r.individual_amount_usdt}}){% endif %}</td><td>{{r.method or '—'}}</td><td>{{r.status}}</td><td>{{kwt(r.created_at)}}</td><td>{{kwt(r.decided_at)}}</td><td>{% if r.status=='PENDING' %}<form method=post action='/owner/requests/decide'><input type=hidden name=csrf value='{{csrf}}'><input type=hidden name=id value='{{r.id}}'><button name=decision value=APPROVED>موافقة مبدئية</button><button name=decision value=REJECTED>رفض</button></form>{% endif %}</td></tr>{% endfor %}</table></article></main></html>"""
     return render_template_string(html,methods=methods,rows=rows,csrf=csrf(),kwt=kwt)
 
 @app.route('/owner/methods/add',methods=['POST'])
@@ -1450,7 +1450,7 @@ def owner_requests_page():
 def owner_method_add():
     check_csrf();init_approval_workflow()
     label=request.form.get('label','').strip();description=request.form.get('description','').strip()
-    if not label or len(label)>80 or len(description)>200:return 'Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª ØºÙŠØ± ØµØ­ÙŠØ­Ø©',400
+    if not label or len(label)>80 or len(description)>200:return 'البيانات غير صحيحة',400
     with db() as conn,conn.cursor() as c:c.execute('INSERT INTO owner_payment_methods(label,description) VALUES(%s,%s)',(label,description))
     return redirect(url_for('owner_requests_page'))
 
@@ -1466,10 +1466,10 @@ def owner_method_toggle():
 def owner_request_decide():
     check_csrf();init_approval_workflow()
     decision=request.form.get('decision')
-    if decision not in ('APPROVED','REJECTED'):return 'Ù‚Ø±Ø§Ø± ØºÙŠØ± ØµØ§Ù„Ø­',400
+    if decision not in ('APPROVED','REJECTED'):return 'قرار غير صالح',400
     with db() as conn,conn.cursor() as c:
         c.execute("UPDATE investor_requests SET status=%s,decided_at=NOW() WHERE id=%s AND status='PENDING'",(decision,request.form.get('id')))
-        if c.rowcount!=1:flash('Ø§Ù„Ø·Ù„Ø¨ ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯ Ø£Ùˆ ØªÙ… Ø§ØªØ®Ø§Ø° Ù‚Ø±Ø§Ø± Ø¨Ø´Ø£Ù†Ù‡ Ù…Ø³Ø¨Ù‚Ø§Ù‹')
+        if c.rowcount!=1:flash('الطلب غير موجود أو تم اتخاذ قرار بشأنه مسبقاً')
     return redirect(url_for('owner_requests_page'))
 
 
@@ -1492,7 +1492,7 @@ def init_owner_payouts():
             status TEXT NOT NULL DEFAULT 'DRAFT',
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
 
-OWNER_PAYOUT_HTML="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Ø§Ù„Ù…Ø³ØªØ­Ù‚Ø§Øª ÙˆØ§Ù„ØªØ­ÙˆÙŠÙ„Ø§Øª</title><style>body{font-family:system-ui;background:#101827;color:#fff;padding:18px}main{max-width:1000px;margin:auto}article{background:#203047;padding:18px;border-radius:12px;margin:14px 0}input,select,button{padding:11px;margin:5px;max-width:90%;border-radius:6px}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #607080;text-align:right}a{color:#8de1ff}small{color:#c8d3dd}</style><main><h1>ðŸ‡°ðŸ‡¼ Ù…Ø³ØªØ­Ù‚Ø§Øª ØµØ§Ø­Ø¨ Ø§Ù„Ø¨ÙˆØª</h1><p><a href='/owner/investors'>Ø¥Ø¯Ø§Ø±Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a> | <a href='/'>Ø§Ù„Ø±Ø¦ÙŠØ³ÙŠØ©</a></p>{% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}<article><h2>Ø­Ø¯ Ø§Ù„ØªØ­ÙˆÙŠÙ„ Ø§Ù„Ù…Ù‚ØªØ±Ø­: 100 USDT</h2><p>Ø§Ù„Ù…Ø³ØªØ­Ù‚Ø§Øª Ø§Ù„Ù…Ø¤ÙƒØ¯Ø© ÙˆØ§Ù„Ù…Ø³Ø¬Ù„Ø©: <b>{{balance}} USDT</b></p><p>Ø§Ù„Ù…Ø¨Ø§Ù„Øº ØºÙŠØ± Ø§Ù„Ù…ØªØ­Ù‚Ù‚ Ù…Ù†Ù‡Ø§ Ù„Ø§ ØªØ¯Ø®Ù„ ÙÙŠ Ø§Ù„Ø­Ø³Ø§Ø¨.</p><small>Ù„Ø§ ØªÙˆØ¬Ø¯ ØªØ­ÙˆÙŠÙ„Ø§Øª Ø¢Ù„ÙŠØ© Ø£Ùˆ Ø·Ù„Ø¨Ø§Øª Ø³Ø­Ø¨ ÙØ¹Ù„ÙŠØ© ÙÙŠ Ù‡Ø°Ù‡ Ø§Ù„Ù†Ø³Ø®Ø©. Ù„Ø§ ÙŠÙÙ†Ø´Ø£ Ø·Ù„Ø¨ Ø¯ÙØ¹ Ø¥Ù„Ø§ Ø¨Ø¹Ø¯ Ø¥Ø«Ø¨Ø§Øª Ø§Ù„Ù…ØµØ¯Ø± ÙˆØ§Ù„Ù…Ù„ÙƒÙŠØ© ÙˆØ§Ù„Ø±Ø³ÙˆÙ… ÙˆØ§Ù„Ù…ÙˆØ§ÙÙ‚Ø§Øª Ø§Ù„Ù†Ø¸Ø§Ù…ÙŠØ©.</small></article><article><h2>Ø§Ø®ØªÙŠØ§Ø± ÙˆØ¬Ù‡Ø© Ø§Ø³ØªÙ„Ø§Ù… Ù…Ø³ØªØ­Ù‚Ø§ØªÙƒ</h2><form method=post action='/owner/payout-settings'><input type=hidden name=csrf value='{{csrf}}'><label>Ø§Ù„ÙˆØ¬Ù‡Ø© <select name=destination_type><option value=RAIN {% if settings.destination_type=='RAIN' %}selected{% endif %}>Ø±ÙŠÙ†</option><option value=BANK {% if settings.destination_type=='BANK' %}selected{% endif %}>Ø­Ø³Ø§Ø¨ Ø¨Ù†ÙƒÙŠ</option></select></label><p>Ø´Ø¨ÙƒØ© Ø±ÙŠÙ† <input name=rain_network maxlength=50 value='{{settings.rain_network or ""}}' placeholder='Ø§Ù„Ø´Ø¨ÙƒØ©'></p><p>Ø¹Ù†ÙˆØ§Ù† Ø¥ÙŠØ¯Ø§Ø¹ Ø±ÙŠÙ† <input name=rain_address maxlength=256 value='{{settings.rain_address or ""}}' placeholder='Ø§Ù„Ø¹Ù†ÙˆØ§Ù†'></p><p>Ø§Ø³Ù… Ø§Ù„Ø¨Ù†Ùƒ <input name=bank_name maxlength=120 value='{{settings.bank_name or ""}}' placeholder='Ø§Ø³Ù… Ø§Ù„Ø¨Ù†Ùƒ'></p><p>IBAN <input name=bank_iban maxlength=34 value='{{settings.bank_iban or ""}}' placeholder='Ø±Ù‚Ù… Ø§Ù„Ø­Ø³Ø§Ø¨ Ø§Ù„Ø¯ÙˆÙ„ÙŠ'></p><button>Ø­ÙØ¸ Ø§Ù„ÙˆØ¬Ù‡Ø© ÙÙ‚Ø·</button></form><small>Ù‡Ø°Ù‡ Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø®Ø§ØµØ© Ø¨Ø§Ù„Ø¥Ø¯Ø§Ø±Ø© ÙˆÙ„Ø§ ØªÙØ±Ø³Ù„ Ø¥Ù„Ù‰ Binance Ø£Ùˆ Ø±ÙŠÙ† Ø£Ùˆ Ø§Ù„Ø¨Ù†Ùƒ. Ø§Ø­ÙØ¸Ù‡Ø§ ÙÙ‚Ø· Ø¹Ù„Ù‰ Ù…ÙˆÙ‚Ø¹ HTTPS Ø¢Ù…Ù†. Ù„Ø§ ØªØ¯Ø®Ù„ ÙƒÙ„Ù…Ø© Ù…Ø±ÙˆØ± Ø£Ùˆ Ø±Ù…Ø² ØªØ­Ù‚Ù‚ Ø£Ùˆ Ù…ÙØªØ§Ø­ Ù…Ø­ÙØ¸Ø©.</small></article><article><h2>Ø³Ø¬Ù„ Ø§Ù„Ù…Ø³ØªØ­Ù‚Ø§Øª Ø­Ø³Ø¨ Ø§Ù„Ù…ØµØ¯Ø±</h2><table><tr><th>Ø§Ù„Ù†ÙˆØ¹</th><th>Ø§Ù„Ù…Ø¨Ù„Øº</th><th>Ø­Ø§Ù„Ø© Ø§Ù„ØªØ­Ù‚Ù‚</th><th>Ø§Ù„Ù…Ø±Ø¬Ø¹</th><th>Ø§Ù„ÙˆÙ‚Øª (Ø§Ù„ÙƒÙˆÙŠØª)</th></tr>{% for r in rows %}<tr><td>{{r.source_type}}</td><td>{{r.amount_usdt}}</td><td>{{r.verification_status}}</td><td>{{r.reference}}</td><td>{{kwt(r.created_at)}}</td></tr>{% endfor %}</table></article></main></html>"""
+OWNER_PAYOUT_HTML="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>المستحقات والتحويلات</title><style>body{font-family:system-ui;background:#101827;color:#fff;padding:18px}main{max-width:1000px;margin:auto}article{background:#203047;padding:18px;border-radius:12px;margin:14px 0}input,select,button{padding:11px;margin:5px;max-width:90%;border-radius:6px}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #607080;text-align:right}a{color:#8de1ff}small{color:#c8d3dd}</style><main><h1>🇰🇼 مستحقات صاحب البوت</h1><p><a href='/owner/investors'>إدارة المستثمرين</a> | <a href='/'>الرئيسية</a></p>{% for m in get_flashed_messages() %}<article>{{m}}</article>{% endfor %}<article><h2>حد التحويل المقترح: 100 USDT</h2><p>المستحقات المؤكدة والمسجلة: <b>{{balance}} USDT</b></p><p>المبالغ غير المتحقق منها لا تدخل في الحساب.</p><small>لا توجد تحويلات آلية أو طلبات سحب فعلية في هذه النسخة. لا يُنشأ طلب دفع إلا بعد إثبات المصدر والملكية والرسوم والموافقات النظامية.</small></article><article><h2>اختيار وجهة استلام مستحقاتك</h2><form method=post action='/owner/payout-settings'><input type=hidden name=csrf value='{{csrf}}'><label>الوجهة <select name=destination_type><option value=RAIN {% if settings.destination_type=='RAIN' %}selected{% endif %}>رين</option><option value=BANK {% if settings.destination_type=='BANK' %}selected{% endif %}>حساب بنكي</option></select></label><p>شبكة رين <input name=rain_network maxlength=50 value='{{settings.rain_network or ""}}' placeholder='الشبكة'></p><p>عنوان إيداع رين <input name=rain_address maxlength=256 value='{{settings.rain_address or ""}}' placeholder='العنوان'></p><p>اسم البنك <input name=bank_name maxlength=120 value='{{settings.bank_name or ""}}' placeholder='اسم البنك'></p><p>IBAN <input name=bank_iban maxlength=34 value='{{settings.bank_iban or ""}}' placeholder='رقم الحساب الدولي'></p><button>حفظ الوجهة فقط</button></form><small>هذه البيانات خاصة بالإدارة ولا تُرسل إلى Binance أو رين أو البنك. احفظها فقط على موقع HTTPS آمن. لا تدخل كلمة مرور أو رمز تحقق أو مفتاح محفظة.</small></article><article><h2>سجل المستحقات حسب المصدر</h2><table><tr><th>النوع</th><th>المبلغ</th><th>حالة التحقق</th><th>المرجع</th><th>الوقت (الكويت)</th></tr>{% for r in rows %}<tr><td>{{r.source_type}}</td><td>{{r.amount_usdt}}</td><td>{{r.verification_status}}</td><td>{{r.reference}}</td><td>{{kwt(r.created_at)}}</td></tr>{% endfor %}</table></article></main></html>"""
 
 @app.route('/owner/payouts')
 @auth
@@ -1512,14 +1512,14 @@ def owner_payout_settings_save():
     network=request.form.get('rain_network','').strip();address=request.form.get('rain_address','').strip()
     bank=request.form.get('bank_name','').strip();iban=request.form.get('bank_iban','').strip().replace(' ','').upper()
     if kind not in ('RAIN','BANK') or len(network)>50 or len(address)>256 or len(bank)>120 or len(iban)>34:
-        flash('Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„ÙˆØ¬Ù‡Ø© ØºÙŠØ± ØµØ­ÙŠØ­Ø©');return redirect(url_for('owner_payouts'))
+        flash('بيانات الوجهة غير صحيحة');return redirect(url_for('owner_payouts'))
     if kind=='RAIN' and (not network or not address):
-        flash('Ø£Ø¯Ø®Ù„ Ø¹Ù†ÙˆØ§Ù† Ø±ÙŠÙ† ÙˆØ§Ù„Ø´Ø¨ÙƒØ©');return redirect(url_for('owner_payouts'))
+        flash('أدخل عنوان رين والشبكة');return redirect(url_for('owner_payouts'))
     if kind=='BANK' and (not bank or not iban or not iban.isalnum()):
-        flash('Ø£Ø¯Ø®Ù„ Ø§Ø³Ù… Ø§Ù„Ø¨Ù†Ùƒ ÙˆØ±Ù‚Ù… IBAN');return redirect(url_for('owner_payouts'))
+        flash('أدخل اسم البنك ورقم IBAN');return redirect(url_for('owner_payouts'))
     with db() as conn,conn.cursor() as c:
         c.execute('UPDATE owner_payout_settings SET destination_type=%s,rain_network=%s,rain_address=%s,bank_name=%s,bank_iban=%s,updated_at=NOW() WHERE id=1',(kind,network,address,bank,iban))
-    flash('ØªÙ… Ø­ÙØ¸ ÙˆØ¬Ù‡Ø© Ø§Ù„Ø§Ø³ØªÙ„Ø§Ù…. Ù„Ù… ÙŠØªÙ… Ø¥Ø±Ø³Ø§Ù„ Ø£ÙŠ Ø£Ù…ÙˆØ§Ù„.');return redirect(url_for('owner_payouts'))
+    flash('تم حفظ وجهة الاستلام. لم يتم إرسال أي أموال.');return redirect(url_for('owner_payouts'))
 
 @app.route('/toggle-bot', methods=['POST'])
 @auth
@@ -1529,19 +1529,19 @@ def toggle_bot():
         check_csrf()
         action = request.form.get('action', '')
         if action not in ('stop', 'resume'):
-            raise ValueError('Ø£Ù…Ø± Ø§Ù„Ø¥ÙŠÙ‚Ø§Ù ØºÙŠØ± ØµØ§Ù„Ø­')
+            raise ValueError('أمر الإيقاف غير صالح')
         paused = action == 'stop'
         init()
         with db() as conn, conn.cursor() as c:
             c.execute('UPDATE bot_preferences SET is_paused=%s, updated_at=NOW() WHERE id=1', (paused,))
             if c.rowcount != 1:
-                raise RuntimeError('ØªØ¹Ø°Ø± Ø­ÙØ¸ Ø­Ø§Ù„Ø© Ø§Ù„Ø¨ÙˆØª')
+                raise RuntimeError('تعذر حفظ حالة البوت')
             if paused:
                 c.execute("UPDATE bot_orders_v2 SET status='CANCELLED', note='Cancelled by admin stop' WHERE status='PENDING'")
-        flash('ðŸ›‘ ØªÙ… Ø¥ÙŠÙ‚Ø§Ù Ø§Ù„ÙØ­Øµ ÙˆÙØªØ­ Ø§Ù„ØµÙÙ‚Ø§Øª Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø©.' if paused else 'â–¶ï¸ ØªÙ… Ø§Ø³ØªØ¦Ù†Ø§Ù Ø§Ù„ÙØ­Øµ ÙÙ‚Ø·Ø› Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ ÙŠØ¨Ù‚Ù‰ Ù…Ø­ÙƒÙˆÙ…Ø§Ù‹ Ø¨Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø§Ù„Ø£Ù…Ø§Ù†.')
+        flash('🛑 تم إيقاف الفحص وفتح الصفقات الجديدة.' if paused else '▶️ تم استئناف الفحص فقط؛ التداول الحقيقي يبقى محكوماً بإعدادات الأمان.')
     except Exception:
         logging.exception('Failed to change bot pause state')
-        flash('ØªØ¹Ø°Ø± ØªØºÙŠÙŠØ± Ø­Ø§Ù„Ø© Ø§Ù„Ø¨ÙˆØªØ› ØªØ­Ù‚Ù‚ Ù…Ù† Ù‚Ø§Ø¹Ø¯Ø© Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª ÙˆØ³Ø¬Ù„Ø§Øª Render.')
+        flash('تعذر تغيير حالة البوت؛ تحقق من قاعدة البيانات وسجلات Render.')
     return redirect(url_for('home'))
 
 @app.route('/health')
@@ -1555,7 +1555,7 @@ def login():
             email=os.environ.get('ADMIN_EMAIL',''); ph=os.environ.get('ADMIN_PASSWORD_HASH','')
             if email and ph and hmac.compare_digest(request.form.get('email','').lower(),email.lower()) and check_password_hash(ph,request.form.get('password','')):
                 session.clear(); session['admin']=True; session.permanent=True; csrf(); return redirect(url_for('home'))
-            flash('Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ø¯Ø®ÙˆÙ„ ØºÙŠØ± ØµØ­ÙŠØ­Ø©')
+            flash('بيانات الدخول غير صحيحة')
         except Exception as e: flash(str(e)[:160])
     return render_template_string(PAGE,logged=False,csrf=csrf(),live=LIVE)
 
@@ -1565,7 +1565,7 @@ def logout(): session.clear(); return redirect(url_for('login'))
 @app.route('/')
 @auth
 def home():
-    pending=[];recent=[];pos=[];close_suggestions=[];scan_state=None;bal='ØºÙŠØ± Ù…ØªØ§Ø­'
+    pending=[];recent=[];pos=[];close_suggestions=[];scan_state=None;bal='غير متاح'
     try:
         init()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
@@ -1580,14 +1580,14 @@ def home():
     try:
         snapshot=_snapshot_get('account')
         if snapshot:
-            bal=str(snapshot['payload'].get('balance','ØºÙŠØ± Ù…ØªØ§Ø­'))+' USDT'
+            bal=str(snapshot['payload'].get('balance','غير متاح'))+' USDT'
             pos=snapshot['payload'].get('positions',[])
             snapshot_at=kwt(snapshot['captured_at'])
         else:
-            bal='Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø±ØµÙŠØ¯ Ù…Ø¤ÙƒØ¯ Ù…Ø­ÙÙˆØ¸ Ø¨Ø¹Ø¯'
+            bal='لا يوجد رصيد مؤكد محفوظ بعد'
     except Exception:
         logging.exception('Could not load verified account snapshot')
-        bal='ØªØ¹Ø°Ø± Ù‚Ø±Ø§Ø¡Ø© Ø¢Ø®Ø± Ø±ØµÙŠØ¯ Ù…Ø­ÙÙˆØ¸'
+        bal='تعذر قراءة آخر رصيد محفوظ'
     return render_template_string(PAGE,logged=True,csrf=csrf(),live=LIVE,balance=bal,account_snapshot_at=snapshot_at,positions=pos,pending=pending,recent=recent,prefs=preferences() if scan_state is not None else None,close_suggestions=close_suggestions,scan_state=scan_state)
 
 
@@ -1597,11 +1597,11 @@ def update_api_credentials():
     try:
         check_csrf()
         master=os.environ.get('CREDENTIALS_ENCRYPTION_KEY','')
-        if not master: raise ValueError('Ø£Ø¶Ù CREDENTIALS_ENCRYPTION_KEY Ø¥Ù„Ù‰ Render Ø£ÙˆÙ„Ù‹Ø§')
+        if not master: raise ValueError('أضف CREDENTIALS_ENCRYPTION_KEY إلى Render أولًا')
         f=Fernet(master.encode())
         key=request.form.get('api_key','').strip()
         secret=request.form.get('api_secret','').strip()
-        if not key or not secret or len(key)>256 or len(secret)>256: raise ValueError('Ø§Ù„Ù…ÙØ§ØªÙŠØ­ ØºÙŠØ± ØµØ§Ù„Ø­Ø©')
+        if not key or not secret or len(key)>256 or len(secret)>256: raise ValueError('المفاتيح غير صالحة')
         _assert_binance_available()
         # Test new credentials without replacing the active ones.
         params={'timestamp':int(time.time()*1000),'recvWindow':5000}
@@ -1611,19 +1611,19 @@ def update_api_credentials():
         r=requests.get(BASE+'/fapi/v2/account',params=q+'&signature='+sig,headers={'X-MBX-APIKEY':key},timeout=15)
         _record_limit(r)
         _observe_binance_weight(r)
-        if not r.ok: raise ValueError('ÙØ´Ù„ Ø§Ø®ØªØ¨Ø§Ø± Binance. ØªØ­Ù‚Ù‚ Ù…Ù† ØµÙ„Ø§Ø­ÙŠØ§Øª Futures ÙˆØªÙ‚ÙŠÙŠØ¯ IP ÙˆØ§Ù„Ø¨ÙŠØ¦Ø© (ØªØ¬Ø±ÙŠØ¨ÙŠ/Ø­Ù‚ÙŠÙ‚ÙŠ).')
+        if not r.ok: raise ValueError('فشل اختبار Binance. تحقق من صلاحيات Futures وتقييد IP والبيئة (تجريبي/حقيقي).')
         init()
         with db() as conn,conn.cursor() as c:
             c.execute('''INSERT INTO bot_api_credentials(id,api_key_cipher,api_secret_cipher,updated_at)
                          VALUES(1,%s,%s,NOW()) ON CONFLICT(id) DO UPDATE
                          SET api_key_cipher=EXCLUDED.api_key_cipher,api_secret_cipher=EXCLUDED.api_secret_cipher,updated_at=NOW()''',
                       (psycopg2.Binary(f.encrypt(key.encode())),psycopg2.Binary(f.encrypt(secret.encode()))))
-        flash('ØªÙ… Ø§Ø®ØªØ¨Ø§Ø± Ø§Ù„Ø§ØªØµØ§Ù„ ÙˆØ­ÙØ¸ Ù…ÙØ§ØªÙŠØ­ Binance Ø§Ù„Ø¬Ø¯ÙŠØ¯Ø© Ø¨Ø´ÙƒÙ„ Ù…Ø´ÙØ±.')
+        flash('تم اختبار الاتصال وحفظ مفاتيح Binance الجديدة بشكل مشفر.')
     except (InvalidToken,ValueError) as e:
         flash(str(e)[:180])
     except Exception:
         logging.exception('Credential update failed (no secrets logged)')
-        flash('ØªØ¹Ø°Ø± Ø­ÙØ¸ Ø§Ù„Ù…ÙØ§ØªÙŠØ­. ØªØ­Ù‚Ù‚ Ù…Ù† Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Neon ÙˆÙ…ÙØªØ§Ø­ Ø§Ù„ØªØ´ÙÙŠØ±.')
+        flash('تعذر حفظ المفاتيح. تحقق من إعدادات Neon ومفتاح التشفير.')
     return redirect(url_for('home'))
 
 @app.route('/settings/preferences',methods=['POST'])
@@ -1635,13 +1635,13 @@ def save_preferences():
         leverage=int(request.form['max_leverage'])
         target=D(request.form['target_roi_pct'])
         if not (D('1')<=exposure<=D('100') and 1<=leverage<=150 and D('1')<=target<=D('100')):
-            raise ValueError('Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Ø®Ø§Ø±Ø¬ Ø§Ù„Ø­Ø¯ÙˆØ¯ Ø§Ù„Ù…Ø³Ù…ÙˆØ­Ø©')
+            raise ValueError('الإعدادات خارج الحدود المسموحة')
         init()
         with db() as conn,conn.cursor() as c:
             c.execute('UPDATE bot_preferences SET max_exposure_pct=%s,max_leverage=%s,target_roi_pct=%s,updated_at=NOW() WHERE id=1',(exposure,leverage,target))
-        flash('ØªÙ… Ø­ÙØ¸ Ø­Ø¯ÙˆØ¯ Ø§Ù„ØªØ­Ù„ÙŠÙ„. Ù‚Ø¯ Ù„Ø§ ÙŠØ³Ù…Ø­ Binance Ø¨Ø§Ù„Ø±Ø§ÙØ¹Ø© Ø§Ù„Ù…Ø·Ù„ÙˆØ¨Ø© Ù„ÙƒÙ„ Ø±Ù…Ø².')
+        flash('تم حفظ حدود التحليل. قد لا يسمح Binance بالرافعة المطلوبة لكل رمز.')
     except Exception as e:
-        flash('ØªØ¹Ø°Ø± Ø­ÙØ¸ Ø§Ù„Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª: '+str(e)[:150])
+        flash('تعذر حفظ الإعدادات: '+str(e)[:150])
     return redirect(url_for('home'))
 
 @app.route('/scan',methods=['POST'])
@@ -1649,9 +1649,9 @@ def save_preferences():
 def scan():
     try:
         check_csrf()
-        if not BINANCE_MARKET_SCANS_ENABLED: raise ValueError('ÙØ­Øµ Binance Ù…Ø¹Ø·Ù„ Ø§Ø­ØªØ±Ø§Ø²ÙŠÙ‹Ø§ Ù…Ù† Ø¥Ø¹Ø¯Ø§Ø¯Ø§Øª Render')
+        if not BINANCE_MARKET_SCANS_ENABLED: raise ValueError('فحص Binance معطل احترازيًا من إعدادات Render')
         init()
-        if is_bot_paused(): raise ValueError('Ø§Ù„Ø¨ÙˆØª Ù…ØªÙˆÙ‚Ù Ø¨Ø£Ù…Ø± Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„')
+        if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول')
         count=0
         for sym in SYMBOLS:
             try:
@@ -1664,7 +1664,7 @@ def scan():
                     if c.fetchone(): continue
                     c.execute('INSERT INTO bot_orders_v2(symbol,direction,entry_reference,stop_reference,take_reference) VALUES(%s,%s,%s,%s,%s)',(sym,direction,entry,stop,take));count+=1
             except Exception as e: logging.warning('scan %s: %s',sym,str(e)[:180])
-        flash(f'Ø£ÙÙ†Ø´Ø¦Øª {count} ÙØ±Øµ. Ø§Ù„ØªØ­Ù„ÙŠÙ„ Ù„ÙŠØ³ Ø¶Ù…Ø§Ù†Ù‹Ø§ Ù„Ù„Ø±Ø¨Ø­.')
+        flash(f'أُنشئت {count} فرص. التحليل ليس ضمانًا للربح.')
     except Exception as e: flash(str(e)[:180])
     return redirect(url_for('home'))
 
@@ -1674,7 +1674,7 @@ def reject(order_id):
     try:
         check_csrf()
         with db() as conn,conn.cursor() as c: c.execute("UPDATE bot_orders_v2 SET status='REJECTED' WHERE id=%s AND status='PENDING'",(order_id,))
-        flash('ØªÙ… Ø±ÙØ¶ Ø§Ù„ÙØ±ØµØ©')
+        flash('تم رفض الفرصة')
     except Exception as e: flash(str(e)[:180])
     return redirect(url_for('home'))
 
@@ -1683,24 +1683,24 @@ def reject(order_id):
 def approve(order_id):
     try:
         check_csrf()
-        if is_bot_paused(): raise ValueError('Ø§Ù„Ø¨ÙˆØª Ù…ØªÙˆÙ‚Ù Ø¨Ø£Ù…Ø± Ø§Ù„Ù…Ø³Ø¤ÙˆÙ„')
-        if not LIVE or not EXECUTION_AUDITED: raise ValueError('ØªÙ†ÙÙŠØ° Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ù…Ù‚ÙÙ„ Ù„Ø­ÙŠÙ† Ø§Ø®ØªØ¨Ø§Ø± Ø§Ù„Ø£ÙˆØ§Ù…Ø± ÙˆØ§Ø¹ØªÙ…Ø§Ø¯ EXECUTION_AUDITED')
+        if is_bot_paused(): raise ValueError('البوت متوقف بأمر المسؤول')
+        if not LIVE or not EXECUTION_AUDITED: raise ValueError('تنفيذ التداول مقفل لحين اختبار الأوامر واعتماد EXECUTION_AUDITED')
         init()
         with db() as conn,conn.cursor(cursor_factory=RealDictCursor) as c:
             c.execute("SELECT COUNT(*) AS n FROM bot_orders_v2 WHERE created_at >= date_trunc('day',NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AND status IN ('SUBMITTING','OPEN','CLOSING','CLOSED','ERROR')")
-            if c.fetchone()['n']>=100: raise ValueError('Ø¨Ù„ØºØª Ø§Ù„Ø­Ø¯ Ø§Ù„ÙŠÙˆÙ…ÙŠ 100 Ù…Ø­Ø§ÙˆÙ„Ø© ÙØªØ­')
+            if c.fetchone()['n']>=100: raise ValueError('بلغت الحد اليومي 100 محاولة فتح')
             c.execute("UPDATE bot_orders_v2 SET status='SUBMITTING' WHERE id=%s AND status='PENDING' RETURNING *",(order_id,))
             row=c.fetchone()
-            if not row: raise ValueError('Ø³Ø¨Ù‚ ØªÙ†ÙÙŠØ° Ø£Ùˆ Ø±ÙØ¶ Ù‡Ø°Ù‡ Ø§Ù„ÙØ±ØµØ©')
+            if not row: raise ValueError('سبق تنفيذ أو رفض هذه الفرصة')
         try:
             order,protect,qty=entry_order(row)
             with db() as conn,conn.cursor() as c:
                 c.execute("UPDATE bot_orders_v2 SET status='OPEN',order_id=%s,stop_algo_id=%s,quantity=%s,entry_price=%s,note='Stop placed' WHERE id=%s",(str(order.get('orderId')),str(protect.get('algoId')),qty,order.get('avgPrice','0'),order_id))
-            flash('ØªÙ… Ø¥Ø±Ø³Ø§Ù„ Ø§Ù„ÙØªØ­ ÙˆØªØ£ÙƒÙŠØ¯ Ø£Ù…Ø± ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø©. ØªØ­Ù‚Ù‚ Ù…Ù† Binance.')
+            flash('تم إرسال الفتح وتأكيد أمر وقف الخسارة. تحقق من Binance.')
         except Exception as e:
             with db() as conn,conn.cursor() as c: c.execute("UPDATE bot_orders_v2 SET status='REQUIRES_REVIEW',note=%s WHERE id=%s",(str(e)[:400],order_id))
             raise
-    except Exception as e: flash('Ù„Ù… ÙŠÙƒØªÙ…Ù„ ÙØªØ­ Ø§Ù„ØµÙÙ‚Ø©: '+str(e)[:220])
+    except Exception as e: flash('لم يكتمل فتح الصفقة: '+str(e)[:220])
     return redirect(url_for('home'))
 
 @app.route('/close/<symbol>',methods=['POST'])
@@ -1708,12 +1708,12 @@ def approve(order_id):
 def close_position(symbol):
     try:
         check_csrf()
-        if not LIVE: raise ValueError('Ø§Ù„ØªØ¯Ø§ÙˆÙ„ Ø§Ù„Ø­Ù‚ÙŠÙ‚ÙŠ Ù…Ø¹Ø·Ù„')
-        if symbol not in SYMBOLS: raise ValueError('Ø±Ù…Ø² ØºÙŠØ± Ù…Ø¹ØªÙ…Ø¯')
+        if not LIVE: raise ValueError('التداول الحقيقي معطل')
+        if symbol not in SYMBOLS: raise ValueError('رمز غير معتمد')
         ps=[p for p in positions() if p['symbol']==symbol]
-        if not ps: raise ValueError('Ø§Ù„Ù…Ø±ÙƒØ² Ù…ØºÙ„Ù‚ Ø¨Ø§Ù„ÙØ¹Ù„')
+        if not ps: raise ValueError('المركز مغلق بالفعل')
         p=ps[0]
-        if p.get('positionSide') not in ('BOTH',None): raise ValueError('ÙˆØ¶Ø¹ Hedge ØºÙŠØ± Ù…Ø¯Ø¹ÙˆÙ…')
+        if p.get('positionSide') not in ('BOTH',None): raise ValueError('وضع Hedge غير مدعوم')
         amt=D(p['positionAmt'])
         order=signed('POST','/fapi/v1/order',{'symbol':symbol,'side':'SELL' if amt>0 else 'BUY',
             'type':'MARKET','quantity':strnum(abs(amt)),'reduceOnly':'true','newOrderRespType':'RESULT'})
@@ -1723,11 +1723,11 @@ def close_position(symbol):
         warning=''
         if tracked and tracked['stop_algo_id']:
             try: signed('DELETE','/fapi/v1/algoOrder',{'symbol':symbol,'algoId':tracked['stop_algo_id']})
-            except Exception as e: warning=' ØªÙ†Ø¨ÙŠÙ‡: Ù„Ù… Ù†ØªØ£ÙƒØ¯ Ù…Ù† Ø¥Ù„ØºØ§Ø¡ ÙˆÙ‚Ù Ø§Ù„Ø®Ø³Ø§Ø±Ø©Ø› Ø±Ø§Ø¬Ø¹ Ø£ÙˆØ§Ù…Ø± Binance: '+str(e)[:90]
+            except Exception as e: warning=' تنبيه: لم نتأكد من إلغاء وقف الخسارة؛ راجع أوامر Binance: '+str(e)[:90]
         with db() as conn,conn.cursor() as c:
             c.execute("UPDATE bot_orders_v2 SET status='CLOSED',close_id=%s,note=%s WHERE symbol=%s AND status='OPEN'",(str(order.get('orderId')),'Manual close'+warning,symbol))
-        flash('Ø£ÙØ±Ø³Ù„ Ø£Ù…Ø± Ø§Ù„Ø¥ØºÙ„Ø§Ù‚. Ø±Ø§Ø¬Ø¹ Binance Ù„Ù„ØªØ£ÙƒØ¯ Ù…Ù† Ø§Ù„ØªÙ†ÙÙŠØ°.'+warning)
-    except Exception as e: flash('ØªØ¹Ø°Ø± Ø§Ù„Ø¥ØºÙ„Ø§Ù‚: '+str(e)[:200])
+        flash('أُرسل أمر الإغلاق. راجع Binance للتأكد من التنفيذ.'+warning)
+    except Exception as e: flash('تعذر الإغلاق: '+str(e)[:200])
     return redirect(url_for('home'))
 
 
@@ -1756,7 +1756,7 @@ def owner_support_list():
         c.execute("""SELECT id,email,display_name,phone,subscription_status,bot_paused,created_at
                      FROM investor_accounts ORDER BY id DESC LIMIT 300""")
         users=c.fetchall()
-    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>ðŸ›¡ï¸ Ø¯Ø¹Ù… Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ† â€” Ø­Ø³Ø§Ø¨ Ø§Ù„Ù…Ø¯ÙŠØ±</h1><p><a href='/owner/investors'>Ø§Ù„Ø¹ÙˆØ¯Ø© Ù„Ù„Ù…Ø§Ù„Ùƒ</a></p><article><p>Ù‡Ø°Ø§ Ø§Ù„ÙˆØ¶Ø¹ Ù„Ø§ ÙŠØ¯Ø®Ù„ Ø¨Ø¬Ù„Ø³Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± ÙˆÙ„Ø§ ÙŠØ³Ù…Ø­ Ø¨ÙØªØ­ Ø£Ùˆ Ø¥ØºÙ„Ø§Ù‚ ØµÙÙ‚Ø§Øª Ø£Ùˆ Ø³Ø­Ø¨ Ø£Ù…ÙˆØ§Ù„.</p><table><tr><th>Ø§Ù„Ø§Ø³Ù…</th><th>Ø§Ù„Ø¨Ø±ÙŠØ¯</th><th>Ø§Ù„Ù‡Ø§ØªÙ</th><th>Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ</th><th>Ø§Ù„Ø¨ÙˆØª</th><th>Ø§Ù„Ø¥Ø¬Ø±Ø§Ø¡</th></tr>{% for u in users %}<tr><td>{{u.display_name or 'â€”'}}</td><td>{{u.email}}</td><td>{{u.phone or 'â€”'}}</td><td>{{u.subscription_status}}</td><td>{{'Ù…ØªÙˆÙ‚Ù' if u.bot_paused else 'Ù…Ø³Ù…ÙˆØ­ Ø¥Ø¯Ø§Ø±ÙŠØ§Ù‹'}}</td><td><a href='{{url_for("owner_support_detail",investor_id=u.id)}}'>Ù…Ø´Ø§Ù‡Ø¯Ø© ÙˆØªØ¹Ø¯ÙŠÙ„</a></td></tr>{% endfor %}</table></article></main></html>"""
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>🛡️ دعم المستثمرين — حساب المدير</h1><p><a href='/owner/investors'>العودة للمالك</a></p><article><p>هذا الوضع لا يدخل بجلسة المستثمر ولا يسمح بفتح أو إغلاق صفقات أو سحب أموال.</p><table><tr><th>الاسم</th><th>البريد</th><th>الهاتف</th><th>الاشتراك</th><th>البوت</th><th>الإجراء</th></tr>{% for u in users %}<tr><td>{{u.display_name or '—'}}</td><td>{{u.email}}</td><td>{{u.phone or '—'}}</td><td>{{u.subscription_status}}</td><td>{{'متوقف' if u.bot_paused else 'مسموح إدارياً'}}</td><td><a href='{{url_for("owner_support_detail",investor_id=u.id)}}'>مشاهدة وتعديل</a></td></tr>{% endfor %}</table></article></main></html>"""
     return render_template_string(html,users=users)
 
 @app.route('/owner/support/<int:investor_id>')
@@ -1767,7 +1767,7 @@ def owner_support_detail(investor_id):
         c.execute("""SELECT id,email,display_name,phone,subscription_status,trial_end,paid_until,
                      bot_paused,created_at FROM investor_accounts WHERE id=%s""",(investor_id,))
         user=c.fetchone()
-        if not user:return 'Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯',404
+        if not user:return 'المستثمر غير موجود',404
         c.execute("""SELECT id,kind,status,amount_usdt,investment_mode,pooled_amount_usdt,
                      individual_amount_usdt,created_at FROM investor_requests
                      WHERE investor_id=%s ORDER BY id DESC LIMIT 40""",(investor_id,))
@@ -1775,7 +1775,7 @@ def owner_support_detail(investor_id):
         c.execute("""SELECT action,detail,created_at FROM owner_support_audit
                      WHERE investor_id=%s ORDER BY id DESC LIMIT 30""",(investor_id,))
         audit=c.fetchall()
-    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>ðŸ›¡ï¸ ÙˆØ¶Ø¹ Ø¯Ø¹Ù… Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± #{{u.id}}</h1><p><a href='/owner/support'>Ø§Ù„Ø¹ÙˆØ¯Ø© Ø¥Ù„Ù‰ Ù‚Ø§Ø¦Ù…Ø© Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±ÙŠÙ†</a> | <a href='/owner/investors'>Ù„ÙˆØ­Ø© Ø§Ù„Ù…Ø§Ù„Ùƒ</a></p>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>ÙˆØ¶Ø¹ Ø§Ù„Ù…Ø´Ø§Ù‡Ø¯Ø©</h2><p>Ø§Ù„Ø¨Ø±ÙŠØ¯: {{u.email}} â€” Ø§Ù„Ø§Ø³Ù…: {{u.display_name or 'â€”'}} â€” Ø§Ù„Ù‡Ø§ØªÙ: {{u.phone or 'â€”'}}</p><p>Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ: {{u.subscription_status}} | Ù†Ù‡Ø§ÙŠØ© Ø§Ù„ØªØ¬Ø±Ø¨Ø©: {{u.trial_end}} | Ù†Ù‡Ø§ÙŠØ© Ø§Ù„Ù…Ø¯ÙÙˆØ¹: {{u.paid_until or 'â€”'}}</p><p><small>Ø§Ù„Ø¨ÙŠØ§Ù†Ø§Øª Ø§Ù„Ù…Ø§Ù„ÙŠØ© Ø£Ø¯Ù†Ø§Ù‡ Ø·Ù„Ø¨Ø§Øª ÙˆØªØµØ±ÙŠØ­Ø§Øª ÙˆÙ„ÙŠØ³Øª Ø£Ø±ØµØ¯Ø© Binance Ù…Ø¤ÙƒØ¯Ø©. Ù„Ø§ ØªØ¸Ù‡Ø± ÙƒÙ„Ù…Ø§Øª Ø§Ù„Ù…Ø±ÙˆØ± Ø£Ùˆ Ù…ÙØ§ØªÙŠØ­ API.</small></p><h3>Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</h3><table><tr><th>Ø§Ù„Ù†ÙˆØ¹</th><th>Ø§Ù„Ù†Ø¸Ø§Ù…</th><th>Ø§Ù„Ù…Ø¨Ù„Øº</th><th>Ø§Ù„Ø­Ø§Ù„Ø©</th><th>Ø§Ù„ØªØ§Ø±ÙŠØ®</th></tr>{% for r in reqs %}<tr><td>{{r.kind}}</td><td>{{r.investment_mode or 'â€”'}}</td><td>{{r.amount_usdt or 'â€”'}}</td><td>{{r.status}}</td><td>{{r.created_at}}</td></tr>{% else %}<tr><td colspan=5>Ù„Ø§ ØªÙˆØ¬Ø¯ Ø·Ù„Ø¨Ø§Øª</td></tr>{% endfor %}</table></article><article><h2>ÙˆØ¶Ø¹ Ø§Ù„ØªØ¹Ø¯ÙŠÙ„ Ø§Ù„Ø¥Ø¯Ø§Ø±ÙŠ</h2><form method=post action='{{url_for("owner_support_update",investor_id=u.id)}}'><input type=hidden name=csrf value='{{csrf}}'><label>Ø§Ù„Ø§Ø³Ù… <input name=display_name maxlength=120 value='{{u.display_name or ""}}'></label><label>Ø§Ù„Ù‡Ø§ØªÙ <input name=phone maxlength=30 value='{{u.phone or ""}}'></label><label>Ø­Ø§Ù„Ø© Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ <select name=subscription_status>{% for state in ['TRIAL','ACTIVE','EXPIRED','SUSPENDED'] %}<option value='{{state}}' {% if u.subscription_status==state %}selected{% endif %}>{{state}}</option>{% endfor %}</select></label><label>Ø¥Ø¹Ø¯Ø§Ø¯ Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±: <select name=bot_paused><option value=1 {% if u.bot_paused %}selected{% endif %}>Ø¥ÙŠÙ‚Ø§Ù Ø¨ÙˆØª Ø§Ù„Ù…Ø³ØªØ«Ù…Ø±</option><option value=0 {% if not u.bot_paused %}selected{% endif %}>Ø§Ù„Ø³Ù…Ø§Ø­ Ø¥Ø¯Ø§Ø±ÙŠÙ‹Ø§ (Ù„Ø§ ÙŠÙØ¹Ù„ Ø§Ù„ØªØ¯Ø§ÙˆÙ„)</option></select></label><button type=submit>Ø­ÙØ¸ Ø§Ù„ØªØ¹Ø¯ÙŠÙ„ ÙˆØªØ³Ø¬ÙŠÙ„Ù‡</button></form><small>ØªØºÙŠÙŠØ± Ø§Ù„Ø§Ø´ØªØ±Ø§Ùƒ Ù„Ø§ ÙŠØ«Ø¨Øª Ø¯ÙØ¹Ù‹Ø§ Ø£Ùˆ ÙŠØ­Ø±Ùƒ Ø£Ù…ÙˆØ§Ù„Ù‹Ø§. Ø§Ù„Ø³Ù…Ø§Ø­ Ø§Ù„Ø¥Ø¯Ø§Ø±ÙŠ Ù„Ø§ ÙŠÙ…Ù†Ø­ ØªÙÙˆÙŠØ¶ ØªØ¯Ø§ÙˆÙ„.</small></article><article><h2>Ø³Ø¬Ù„ Ø§Ù„Ø¥Ø¬Ø±Ø§Ø¡Ø§Øª Ø§Ù„Ø¥Ø¯Ø§Ø±ÙŠØ©</h2><table><tr><th>Ø§Ù„Ø¥Ø¬Ø±Ø§Ø¡</th><th>Ø§Ù„ØªÙØ§ØµÙŠÙ„</th><th>Ø§Ù„ÙˆÙ‚Øª</th></tr>{% for a in audit %}<tr><td>{{a.action}}</td><td>{{a.detail}}</td><td>{{a.created_at}}</td></tr>{% else %}<tr><td colspan=3>Ù„Ø§ ÙŠÙˆØ¬Ø¯ Ø³Ø¬Ù„ Ø¨Ø¹Ø¯</td></tr>{% endfor %}</table></article></main></html>"""
+    html="""<!doctype html><html lang=ar dir=rtl><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"""+SUPPORT_CSS+"""<main><h1>🛡️ وضع دعم المستثمر #{{u.id}}</h1><p><a href='/owner/support'>العودة إلى قائمة المستثمرين</a> | <a href='/owner/investors'>لوحة المالك</a></p>{% for msg in get_flashed_messages() %}<article>{{msg}}</article>{% endfor %}<article><h2>وضع المشاهدة</h2><p>البريد: {{u.email}} — الاسم: {{u.display_name or '—'}} — الهاتف: {{u.phone or '—'}}</p><p>الاشتراك: {{u.subscription_status}} | نهاية التجربة: {{u.trial_end}} | نهاية المدفوع: {{u.paid_until or '—'}}</p><p><small>البيانات المالية أدناه طلبات وتصريحات وليست أرصدة Binance مؤكدة. لا تظهر كلمات المرور أو مفاتيح API.</small></p><h3>طلبات المستثمر</h3><table><tr><th>النوع</th><th>النظام</th><th>المبلغ</th><th>الحالة</th><th>التاريخ</th></tr>{% for r in reqs %}<tr><td>{{r.kind}}</td><td>{{r.investment_mode or '—'}}</td><td>{{r.amount_usdt or '—'}}</td><td>{{r.status}}</td><td>{{r.created_at}}</td></tr>{% else %}<tr><td colspan=5>لا توجد طلبات</td></tr>{% endfor %}</table></article><article><h2>وضع التعديل الإداري</h2><form method=post action='{{url_for("owner_support_update",investor_id=u.id)}}'><input type=hidden name=csrf value='{{csrf}}'><label>الاسم <input name=display_name maxlength=120 value='{{u.display_name or ""}}'></label><label>الهاتف <input name=phone maxlength=30 value='{{u.phone or ""}}'></label><label>حالة الاشتراك <select name=subscription_status>{% for state in ['TRIAL','ACTIVE','EXPIRED','SUSPENDED'] %}<option value='{{state}}' {% if u.subscription_status==state %}selected{% endif %}>{{state}}</option>{% endfor %}</select></label><label>إعداد المستثمر: <select name=bot_paused><option value=1 {% if u.bot_paused %}selected{% endif %}>إيقاف بوت المستثمر</option><option value=0 {% if not u.bot_paused %}selected{% endif %}>السماح إداريًا (لا يفعل التداول)</option></select></label><button type=submit>حفظ التعديل وتسجيله</button></form><small>تغيير الاشتراك لا يثبت دفعًا أو يحرك أموالًا. السماح الإداري لا يمنح تفويض تداول.</small></article><article><h2>سجل الإجراءات الإدارية</h2><table><tr><th>الإجراء</th><th>التفاصيل</th><th>الوقت</th></tr>{% for a in audit %}<tr><td>{{a.action}}</td><td>{{a.detail}}</td><td>{{a.created_at}}</td></tr>{% else %}<tr><td colspan=3>لا يوجد سجل بعد</td></tr>{% endfor %}</table></article></main></html>"""
     return render_template_string(html,u=user,reqs=requests_rows,audit=audit,csrf=csrf())
 
 @app.route('/owner/support/<int:investor_id>/update',methods=['POST'])
@@ -1787,16 +1787,16 @@ def owner_support_update(investor_id):
     status=request.form.get('subscription_status','')
     paused=request.form.get('bot_paused','')
     if status not in ('TRIAL','ACTIVE','EXPIRED','SUSPENDED') or paused not in ('0','1'):
-        return 'Ø¥Ø¹Ø¯Ø§Ø¯ ØºÙŠØ± ØµØ§Ù„Ø­',400
-    if phone and not re.fullmatch(r'[+0-9() .-]{5,30}',phone):return 'Ø±Ù‚Ù… Ù‡Ø§ØªÙ ØºÙŠØ± ØµØ§Ù„Ø­',400
+        return 'إعداد غير صالح',400
+    if phone and not re.fullmatch(r'[+0-9() .-]{5,30}',phone):return 'رقم هاتف غير صالح',400
     with db() as conn,conn.cursor() as c:
         c.execute('SELECT display_name,phone,subscription_status,bot_paused FROM investor_accounts WHERE id=%s FOR UPDATE',(investor_id,))
         old=c.fetchone()
-        if old is None:return 'Ø§Ù„Ù…Ø³ØªØ«Ù…Ø± ØºÙŠØ± Ù…ÙˆØ¬ÙˆØ¯',404
+        if old is None:return 'المستثمر غير موجود',404
         c.execute('UPDATE investor_accounts SET display_name=%s,phone=%s,subscription_status=%s,bot_paused=%s WHERE id=%s',(name or None,phone or None,status,paused=='1',investor_id))
         detail=f'status:{old[2]}->{status}; paused:{old[3]}->{paused}; profile_changed:{old[0]!=name or old[1]!=phone}'
         c.execute('INSERT INTO owner_support_audit(investor_id,action,detail) VALUES(%s,%s,%s)',(investor_id,'ADMIN_PROFILE_UPDATE',detail))
-    flash('ØªÙ… Ø­ÙØ¸ Ø§Ù„ØªØ¹Ø¯ÙŠÙ„ ÙˆØªØ³Ø¬ÙŠÙ„Ù‡ ÙÙŠ Ø³Ø¬Ù„ Ø§Ù„Ø¥Ø¯Ø§Ø±Ø©')
+    flash('تم حفظ التعديل وتسجيله في سجل الإدارة')
     return redirect(url_for('owner_support_detail',investor_id=investor_id))
 
 # V57 extension: retain all V38 endpoints and install new risk-capped LIVE controls.
