@@ -1068,6 +1068,13 @@ def v34_snapshot_refresh():
         flash('لم يتم تحديث Binance؛ البيانات القديمة محفوظة. '+str(e)[:120])
     return redirect(url_for('home'))
 
+def _pnl_refresh_wait_seconds():
+    # Informational only: the existing DB gate remains authoritative.
+    with db() as conn, conn.cursor() as c:
+        c.execute("SELECT GREATEST(0, CEIL(EXTRACT(EPOCH FROM (attempted_at + INTERVAL '15 minutes' - NOW()))))::int FROM bot_snapshot_refresh_gate WHERE kind='pnl'")
+        row=c.fetchone()
+    return int(row[0]) if row else 0
+
 @app.route('/api/v34-pnl-refresh',methods=['POST'])
 @auth
 def v34_pnl_refresh():
@@ -1075,14 +1082,14 @@ def v34_pnl_refresh():
         check_csrf()
         _assert_binance_available()
         if not _snapshot_reserve('pnl',900):
-            flash('تحديث الأرباح متاح كل 15 دقيقة.')
+            flash('تحديث الأرباح متاح بعد حوالي '+str((_pnl_refresh_wait_seconds()+59)//60)+' دقيقة. لم نرسل طلباً جديداً إلى Binance.')
             return redirect(url_for('home'))
         _assert_binance_available()
         _snapshot_put('pnl',_daily_pnl_from_binance())
         flash('تم تحديث أرباح وخسائر اليوم من Binance.')
     except Exception as e:
-        logging.warning('V34 PnL refresh deferred: %s',str(e)[:180])
-        flash('لم يتم تحديث الأرباح؛ البيانات القديمة محفوظة. '+str(e)[:120])
+        logging.warning('V34 PnL refresh deferred: %s: %s',type(e).__name__,str(e)[:180])
+        flash('لم يتم تحديث الأرباح؛ البيانات القديمة محفوظة. السبب: '+type(e).__name__+' — '+str(e)[:160])
     return redirect(url_for('home'))
 
 @app.route('/api/daily-pnl')
