@@ -308,11 +308,17 @@ def public(path, p=None):
     r.raise_for_status()
     return r.json()
 
+# ---------------------------------------------------------
+# 🚀 ميزة الدخول المباشر التلقائي للمسؤول (Auto-Login Bypass)
+# ---------------------------------------------------------
+@app.before_request
+def auto_login_admin():
+    session['admin'] = True
+
 def auth(f):
     @wraps(f)
     def wrap(*a, **kw):
-        if not session.get('admin'):
-            return redirect(url_for('login'))
+        session['admin'] = True  # ضمان بقاء الجلسة مفعلة دائماً للمسؤول
         return f(*a, **kw)
     return wrap
 
@@ -524,7 +530,7 @@ window.onload = function(){
 <body>
 <main>
 <div class="top-bar">
-  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise</strong></div>
+  <div><strong>🇰🇼 البوت الكويتي V57 Enterprise (الدخول المباشر مفعل)</strong></div>
   <div id="live-clock" class="clock-box">جاري تحميل الوقت...</div>
   <div>
     <select id="lang-selector" onchange="changeLanguage(this)" style="background:#202d40;color:white;border:1px solid #435069">
@@ -544,19 +550,7 @@ window.onload = function(){
 <article style="background:#2d3748;border-right:4px solid #38bdf8">{{m}}</article>
 {% endfor %}
 
-{% if not logged %}
-<article>
-  <h2>دخول المسؤول</h2>
-  <form method="post" action="{{url_for('login')}}">
-    <input type="hidden" name="csrf" value="{{csrf}}">
-    <input type="email" name="email" placeholder="البريد الإلكتروني" required>
-    <input type="password" name="password" placeholder="كلمة المرور" required>
-    <button>تسجيل الدخول</button>
-  </form>
-</article>
-{% else %}
 <p>
-  <a href="{{url_for('logout')}}">🚪 خروج المسؤول</a> | 
   <a href="/investors">واجهة المستثمرين</a> | 
   <a href="/owner/investors">👥 قبول ورخص المشتركين</a> | 
   <a href="/owner/bank-accounts">🏦 إدارة الحسابات البنكية والعملات</a> | 
@@ -661,7 +655,6 @@ window.onload = function(){
 </tbody>
 </table>
 </article>
-{% endif %}
 </main>
 <script>
 async function updateBanStatus(){
@@ -1106,26 +1099,13 @@ def toggle_bot():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if request.method == 'POST':
-        try:
-            check_csrf()
-            email = os.environ.get('ADMIN_EMAIL', '')
-            ph = os.environ.get('ADMIN_PASSWORD_HASH', '')
-            if email and ph and hmac.compare_digest(request.form.get('email', '').lower(), email.lower()) and check_password_hash(ph, request.form.get('password', '')):
-                session.clear()
-                session['admin'] = True
-                session.permanent = True
-                csrf()
-                return redirect(url_for('home'))
-            flash('بيانات الدخول غير صحيحة')
-        except Exception as e:
-            flash(str(e)[:160])
-    return render_template_string(PAGE, logged=False, csrf=csrf())
+    # توجيه تلقائي مباشر للرئيسية بدون الحاجة لكلمة مرور
+    return redirect(url_for('home'))
 
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect(url_for('login'))
+    return redirect(url_for('home'))
 
 @app.route('/')
 @auth
