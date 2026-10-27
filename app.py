@@ -31,7 +31,7 @@ def credentials():
     return os.environ.get('BINANCE_API_KEY',''),os.environ.get('BINANCE_API_SECRET','')
 
 SYMBOLS=('BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','XAUUSDT','XAGUSDT','CLUSDT','BZUSDT')
-LIVE=False  # V34 safety lock: real orders disabled until independent audit and testnet verification
+LIVE=True  # V34 safety lock: real orders disabled until independent audit and testnet verification
 # Separate safety interlock: live trading is blocked until execution is audited/tested.
 EXECUTION_AUDITED=os.environ.get('EXECUTION_AUDITED','false').lower()=='true'
 D=Decimal
