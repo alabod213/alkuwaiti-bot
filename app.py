@@ -557,10 +557,18 @@ def scheduled_scan():
     try:
         result=auto_scan()
         status=result.get('status','unknown')
-        # A scheduler must not interpret a skipped scan as a completed one.
-        if status in ('binance_scans_disabled','binance_banned','paused','busy','rate_limited'):
+        # HTTP 200 is reserved for a completed scan. Skipped work is not success.
+        if status == 'ok':
+            logging.info('Scheduled scan completed: %s', result)
             return result, 200
-        return result
+        if status in ('binance_scans_disabled', 'binance_banned', 'paused'):
+            logging.warning('Scheduled scan unavailable: %s', result)
+            return result, 503
+        if status in ('busy', 'rate_limited'):
+            logging.info('Scheduled scan skipped: %s', result)
+            return result, 409
+        logging.warning('Scheduled scan unexpected result: %s', result)
+        return result, 500
     except Exception:
         logging.exception('Scheduled scan failed')
         return {'error':'scan failed'},500
